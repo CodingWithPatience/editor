@@ -65,6 +65,8 @@ pub struct EditorApp {
     message: Option<String>,
     message_time: Option<Instant>,
     quit_times: u8,
+    /// IME 是否处于组合状态（Preedit 活跃时过滤 Event::Key）
+    ime_composing: bool,
 }
 
 impl EditorApp {
@@ -95,6 +97,7 @@ impl EditorApp {
             message: None,
             message_time: None,
             quit_times: 0,
+            ime_composing: false,
         };
         if let Some(ref name) = filename {
             if let Ok(buf) = Buffer::load(name) {
@@ -161,8 +164,48 @@ impl EditorApp {
     fn process_key_events(&mut self, ctx: &egui::Context) -> bool {
         let mut dirty = false;
         let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
+
+        // 检测当前帧是否存在 IME 活动（非空 Preedit 或 Commit），
+        // 解决 Event::Key 先于 ImeEvent::Enabled 到达的时序问题
+        let ime_active = events.iter().any(|e| {
+            matches!(e, egui::Event::Ime(egui::ImeEvent::Preedit(text)) if !text.is_empty())
+                || matches!(e, egui::Event::Ime(egui::ImeEvent::Commit(_)))
+        });
+
         for e in &events {
             match e {
+                // IME 状态追踪
+                egui::Event::Ime(ime_event) => {
+                    match ime_event {
+                        egui::ImeEvent::Enabled => {
+                            self.ime_composing = true;
+                        }
+                        egui::ImeEvent::Disabled => {
+                            self.ime_composing = false;
+                        }
+                        egui::ImeEvent::Commit(text) => {
+                            self.ime_composing = false;
+                            if self.prompt_type != PromptType::None {
+                                // Command/Search/Save 提示栏：追加到输入文本
+                                self.input_text.push_str(text);
+                                dirty = true;
+                            } else if self.mode == Mode::Insert {
+                                // Insert 模式：写入 buffer
+                                for ch in text.chars() {
+                                    self.buffer.insert_char(ch, self.text_location);
+                                    self.text_location.grapheme_idx += 1;
+                                }
+                                dirty = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // IME 活跃帧内跳过 Event::Key，避免原始按键写入 buffer
+                egui::Event::Key { .. }
+                    if self.ime_composing || ime_active =>
+                {
+                }
                 egui::Event::Key {
                     key,
                     pressed: true,
@@ -179,7 +222,16 @@ impl EditorApp {
                             dirty = true;
                         }
                     } else if let Some(k) = egui_to_key(*key, *modifiers) {
+                        let mode_before = self.mode;
                         dirty |= self.handle_key(k);
+                        // 模式切换时控制 IME 开关
+                        if self.mode != mode_before {
+                            let ime_on = self.mode == Mode::Insert;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::IMEAllowed(ime_on));
+                            if !ime_on {
+                                self.ime_composing = false;
+                            }
+                        }
                     }
                 }
                 // 搜索提示栏活跃时：捕获文本输入事件用于增量搜索
@@ -1328,6 +1380,37 @@ impl eframe::App for EditorApp {
             let mut s = (*ctx.style()).clone();
             s.override_text_style = Some(egui::TextStyle::Monospace);
             ctx.set_style(s);
+            // 加载 CJK 字体支持中文显示
+            let mut fonts = egui::FontDefinitions::default();
+            let cjk_font_path: Option<&str> = if cfg!(target_os = "windows") {
+                Some("C:\\Windows\\Fonts\\msyh.ttc")
+            } else if cfg!(target_os = "macos") {
+                Some("/System/Library/Fonts/PingFang.ttc")
+            } else if cfg!(target_os = "linux") {
+                // 常见 Linux 发行版 CJK 字体路径
+                [
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                ]
+                .iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .copied()
+            } else {
+                None
+            };
+            if let Some(font_path) = cjk_font_path {
+                if let Ok(font_data) = std::fs::read(font_path) {
+                    fonts.font_data.insert(
+                        "cjk_font".to_owned(),
+                        egui::FontData::from_owned(font_data).into(),
+                    );
+                    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                        family.push("cjk_font".to_owned());
+                    }
+                }
+            }
+            ctx.set_fonts(fonts);
             self.style_initialized = true;
         }
         self.process_key_events(ctx);
@@ -1551,9 +1634,28 @@ impl eframe::App for EditorApp {
 
                 let scroll_y = scroll_out.state.offset.y;
                 let cursor_y = panel_top + self.text_location.line_idx as f32 * row_h - scroll_y;
-                let cursor_x = panel_left
-                    + GUTTER_CHARS as f32 * cw
-                    + self.text_location.grapheme_idx as f32 * cw;
+                // 计算光标 X 坐标：基于实际字符宽度（CJK 字符宽度约为 ASCII 两倍）
+                let cursor_x = {
+                    let line_content = self
+                        .buffer
+                        .get_line_content(self.text_location.line_idx)
+                        .unwrap_or_default();
+                    let byte_idx = self.buffer.grapheme_to_byte(
+                        self.text_location.line_idx,
+                        self.text_location.grapheme_idx,
+                    );
+                    let text_before =
+                        &line_content[..byte_idx.min(line_content.len())];
+                    let gal = ui.fonts(|f| {
+                        f.layout(
+                            text_before.to_string(),
+                            font_id.clone(),
+                            Color32::WHITE,
+                            f32::INFINITY,
+                        )
+                    });
+                    panel_left + gutter_px + gal.rect.width()
+                };
                 // 绘制光标（提示栏活跃时隐藏编辑区光标）
                 if self.prompt_type == PromptType::None
                     && cursor_y >= panel_top - row_h
@@ -1568,8 +1670,46 @@ impl eframe::App for EditorApp {
                             );
                         }
                         _ => {
+                            // Normal/Visual 模式光标块宽度：基于当前字符实际宽度
+                            let cursor_ch_w = self
+                                .buffer
+                                .get_line_content(self.text_location.line_idx)
+                                .and_then(|lc| {
+                                    let gc = self.buffer.grapheme_count(self.text_location.line_idx);
+                                    if gc == 0 || self.text_location.grapheme_idx >= gc {
+                                        return None;
+                                    }
+                                    // grapheme_idx + 1 安全：Normal 模式 snap_cursor 保证 idx < gc
+                                    let end = self.buffer.grapheme_to_byte(
+                                        self.text_location.line_idx,
+                                        (self.text_location.grapheme_idx + 1).min(gc),
+                                    );
+                                    let start = self.buffer.grapheme_to_byte(
+                                        self.text_location.line_idx,
+                                        self.text_location.grapheme_idx,
+                                    );
+                                    let end = end.min(lc.len());
+                                    if start < end {
+                                        let g = &lc[start..end];
+                                        let gal = ui.fonts(|f| {
+                                            f.layout(
+                                                g.to_string(),
+                                                font_id.clone(),
+                                                Color32::WHITE,
+                                                f32::INFINITY,
+                                            )
+                                        });
+                                        Some(gal.rect.width())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(cw);
                             ui.painter().rect_filled(
-                                Rect::from_min_size(pos2(cursor_x, cursor_y), vec2(cw, row_h)),
+                                Rect::from_min_size(
+                                    pos2(cursor_x, cursor_y),
+                                    vec2(cursor_ch_w, row_h),
+                                ),
                                 0.0,
                                 Color32::from_rgba_unmultiplied(255, 255, 200, 180),
                             );
