@@ -1,0 +1,11 @@
+[package]
+name = "editor-gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+editor-core = { path = "../editor-core" }
+egui = "0.31"
+eframe = "0.31"
+unicode-segmentation = "1.12.0"
+rfd = "0.15"

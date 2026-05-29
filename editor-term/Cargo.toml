@@ -1,0 +1,8 @@
+[package]
+name = "editor-term"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+editor-core = { path = "../editor-core" }
+crossterm = "0.28.1"

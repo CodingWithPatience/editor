@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "editor-core",
+    "editor-term",
+    "editor-gui",
+]
+resolver = "2"
