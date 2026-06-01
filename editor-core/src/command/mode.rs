@@ -115,6 +115,380 @@ pub trait FromKey: Sized {
     fn from_key(key: Key) -> Result<Self, String>;
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::{Edit, Move, System};
+    use crate::key::Key;
+
+    // --- Normal 模式按键映射 ---
+
+    #[test]
+    fn normal_i_enters_insert() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('i'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_none());
+    }
+
+    #[test]
+    fn normal_a_enters_insert() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('a'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_esc_stays_normal() {
+        let action = Mode::Normal.compute_mode_action(Key::Escape);
+        assert_eq!(action.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn normal_o_enters_insert() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('o'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_v_enters_visual() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('v'));
+        assert_eq!(action.mode, Mode::Visual);
+    }
+
+    #[test]
+    fn normal_shift_v_enters_visual_line() {
+        let action = Mode::Normal.compute_mode_action(Key::Shift('V'));
+        assert_eq!(action.mode, Mode::VisualLine);
+    }
+
+    #[test]
+    fn normal_colon_enters_command() {
+        let action = Mode::Normal.compute_mode_action(Key::Shift(':'));
+        assert_eq!(action.mode, Mode::Command);
+    }
+
+    #[test]
+    fn normal_dd_pending() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('d'));
+        assert_eq!(action.mode, Mode::NormalPending(PendingKey::D));
+    }
+
+    #[test]
+    fn normal_dd_executes_delete_line() {
+        let action1 = Mode::Normal.compute_mode_action(Key::Char('d'));
+        assert_eq!(action1.mode, Mode::NormalPending(PendingKey::D));
+        let action2 = action1.mode.compute_mode_action(Key::Char('d'));
+        assert_eq!(action2.mode, Mode::Normal);
+        assert!(action2.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_yy_pending() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('y'));
+        assert_eq!(action.mode, Mode::NormalPending(PendingKey::Y));
+    }
+
+    #[test]
+    fn normal_yy_executes() {
+        let action1 = Mode::Normal.compute_mode_action(Key::Char('y'));
+        let action2 = action1.mode.compute_mode_action(Key::Char('y'));
+        assert_eq!(action2.mode, Mode::Normal);
+        assert!(action2.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_x_deletes() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('x'));
+        assert_eq!(action.mode, Mode::Normal);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_u_undoes() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('u'));
+        assert_eq!(action.mode, Mode::Normal);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn normal_ctrl_s_system_save() {
+        let action = Mode::Normal.compute_mode_action(Key::Ctrl('s'));
+        assert_eq!(action.mode, Mode::System(System::Save));
+    }
+
+    #[test]
+    fn normal_ctrl_q_system_quit() {
+        let action = Mode::Normal.compute_mode_action(Key::Ctrl('q'));
+        assert_eq!(action.mode, Mode::System(System::Quit));
+    }
+
+    #[test]
+    fn normal_ctrl_f_system_search() {
+        let action = Mode::Normal.compute_mode_action(Key::Ctrl('f'));
+        assert_eq!(action.mode, Mode::System(System::Search));
+    }
+
+    #[test]
+    fn normal_slash_system_search() {
+        let action = Mode::Normal.compute_mode_action(Key::Char('/'));
+        assert_eq!(action.mode, Mode::System(System::Search));
+    }
+
+    // --- Insert 模式 ---
+
+    #[test]
+    fn insert_escape_to_normal() {
+        let action = Mode::Insert.compute_mode_action(Key::Escape);
+        assert_eq!(action.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn insert_ctrl_w_delete_word() {
+        let action = Mode::Insert.compute_mode_action(Key::Ctrl('w'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn insert_ctrl_u_delete_to_start() {
+        let action = Mode::Insert.compute_mode_action(Key::Ctrl('u'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn insert_char_a() {
+        let action = Mode::Insert.compute_mode_action(Key::Char('a'));
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn insert_enter() {
+        let action = Mode::Insert.compute_mode_action(Key::Enter);
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn insert_backspace() {
+        let action = Mode::Insert.compute_mode_action(Key::Backspace);
+        assert_eq!(action.mode, Mode::Insert);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn insert_ctrl_s_system_save() {
+        let action = Mode::Insert.compute_mode_action(Key::Ctrl('s'));
+        assert_eq!(action.mode, Mode::System(System::Save));
+    }
+
+    // --- Visual 模式 ---
+
+    #[test]
+    fn visual_escape_to_normal() {
+        let action = Mode::Visual.compute_mode_action(Key::Escape);
+        assert_eq!(action.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn visual_d_deletes_selection() {
+        let action = Mode::Visual.compute_mode_action(Key::Char('d'));
+        assert_eq!(action.mode, Mode::Normal);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn visual_y_yanks() {
+        let action = Mode::Visual.compute_mode_action(Key::Char('y'));
+        assert_eq!(action.mode, Mode::Normal);
+        assert!(action.command_list.is_some());
+    }
+
+    #[test]
+    fn visual_ctrl_s_system_save() {
+        let action = Mode::Visual.compute_mode_action(Key::Ctrl('s'));
+        assert_eq!(action.mode, Mode::System(System::Save));
+    }
+
+    // --- CommandValue 解析 ---
+
+    #[test]
+    fn command_quit() {
+        assert_eq!(CommandValue::try_from("q"), Ok(CommandValue::Quit));
+    }
+
+    #[test]
+    fn command_force_quit() {
+        assert_eq!(CommandValue::try_from("q!"), Ok(CommandValue::ForceQuit));
+    }
+
+    #[test]
+    fn command_save() {
+        assert_eq!(CommandValue::try_from("w"), Ok(CommandValue::Save));
+    }
+
+    #[test]
+    fn command_save_as() {
+        assert_eq!(
+            CommandValue::try_from("w /tmp/test.txt"),
+            Ok(CommandValue::SaveAs("/tmp/test.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn command_wq() {
+        assert_eq!(CommandValue::try_from("wq"), Ok(CommandValue::SaveAndQuit));
+    }
+
+    #[test]
+    fn command_save_as_and_quit() {
+        assert_eq!(
+            CommandValue::try_from("wq /tmp/test.txt"),
+            Ok(CommandValue::SaveAsAndQuit("/tmp/test.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn command_open() {
+        assert_eq!(
+            CommandValue::try_from("e /tmp/test.txt"),
+            Ok(CommandValue::Open("/tmp/test.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn command_force_open() {
+        assert_eq!(
+            CommandValue::try_from("e! /tmp/test.txt"),
+            Ok(CommandValue::ForceOpen("/tmp/test.txt".to_string()))
+        );
+    }
+
+    #[test]
+    fn command_no_highlight() {
+        assert_eq!(
+            CommandValue::try_from("noh"),
+            Ok(CommandValue::NoHighlight)
+        );
+    }
+
+    #[test]
+    fn command_set_line_numbers() {
+        assert_eq!(
+            CommandValue::try_from("set nu"),
+            Ok(CommandValue::SetLineNumbers(true))
+        );
+    }
+
+    #[test]
+    fn command_set_no_line_numbers() {
+        assert_eq!(
+            CommandValue::try_from("set nonu"),
+            Ok(CommandValue::SetLineNumbers(false))
+        );
+    }
+
+    #[test]
+    fn command_invalid() {
+        assert!(CommandValue::try_from("invalid_command").is_err());
+    }
+
+    // --- FromKey trait ---
+
+    #[test]
+    fn move_from_key_hjkl() {
+        assert_eq!(Move::from_key(Key::Char('h')), Ok(Move::Left));
+        assert_eq!(Move::from_key(Key::Char('j')), Ok(Move::Down));
+        assert_eq!(Move::from_key(Key::Char('k')), Ok(Move::Up));
+        assert_eq!(Move::from_key(Key::Char('l')), Ok(Move::Right));
+    }
+
+    #[test]
+    fn move_from_key_arrows() {
+        assert_eq!(Move::from_key(Key::Left), Ok(Move::Left));
+        assert_eq!(Move::from_key(Key::Down), Ok(Move::Down));
+        assert_eq!(Move::from_key(Key::Up), Ok(Move::Up));
+        assert_eq!(Move::from_key(Key::Right), Ok(Move::Right));
+    }
+
+    #[test]
+    fn move_from_key_word_motions() {
+        assert_eq!(Move::from_key(Key::Char('w')), Ok(Move::NextWordSplitBySymbol));
+        assert_eq!(Move::from_key(Key::Char('e')), Ok(Move::EndOfWordSplitBySymbol));
+        assert_eq!(Move::from_key(Key::Char('b')), Ok(Move::PrevWordSplitBySymbol));
+    }
+
+    #[test]
+    fn move_from_key_line_motions() {
+        assert_eq!(Move::from_key(Key::Char('0')), Ok(Move::StartOfLine));
+        assert_eq!(Move::from_key(Key::Shift('$')), Ok(Move::EndOfLine));
+        assert_eq!(Move::from_key(Key::Shift('^')), Ok(Move::FirstVisibleCharOfLine));
+    }
+
+    #[test]
+    fn move_from_key_page() {
+        assert_eq!(Move::from_key(Key::PageUp), Ok(Move::PageUp));
+        assert_eq!(Move::from_key(Key::PageDown), Ok(Move::PageDown));
+    }
+
+    #[test]
+    fn move_from_key_invalid() {
+        assert!(Move::from_key(Key::Char('z')).is_err());
+    }
+
+    #[test]
+    fn edit_from_key_insert() {
+        assert_eq!(Edit::from_key(Key::Char('a')), Ok(Edit::Insert('a')));
+        assert_eq!(Edit::from_key(Key::Shift('A')), Ok(Edit::Insert('A')));
+    }
+
+    #[test]
+    fn edit_from_key_special() {
+        assert_eq!(Edit::from_key(Key::Tab), Ok(Edit::Insert('\t')));
+        assert_eq!(Edit::from_key(Key::Enter), Ok(Edit::InsertNewline));
+        assert_eq!(Edit::from_key(Key::Backspace), Ok(Edit::DeleteBackward));
+        assert_eq!(Edit::from_key(Key::Delete), Ok(Edit::Delete));
+    }
+
+    #[test]
+    fn edit_from_key_ctrl() {
+        assert_eq!(Edit::from_key(Key::CtrlBackspace), Ok(Edit::DeleteWordBackward));
+        assert_eq!(Edit::from_key(Key::CtrlDelete), Ok(Edit::DeleteWord));
+    }
+
+    #[test]
+    fn system_from_key() {
+        assert_eq!(System::from_key(Key::Ctrl('q')), Ok(System::Quit));
+        assert_eq!(System::from_key(Key::Ctrl('s')), Ok(System::Save));
+        assert_eq!(System::from_key(Key::Ctrl('f')), Ok(System::Search));
+        assert_eq!(System::from_key(Key::Escape), Ok(System::Dismiss));
+    }
+
+    #[test]
+    fn system_from_key_invalid() {
+        assert!(System::from_key(Key::Char('a')).is_err());
+    }
+
+    // --- CursorStyle ---
+
+    #[test]
+    fn cursor_style_normal_is_block() {
+        assert_eq!(Mode::Normal.cursor_style(), CursorStyle::BlinkingBlock);
+    }
+
+    #[test]
+    fn cursor_style_insert_is_bar() {
+        assert_eq!(Mode::Insert.cursor_style(), CursorStyle::BlinkingBar);
+    }
+
+    #[test]
+    fn cursor_style_visual_is_block() {
+        assert_eq!(Mode::Visual.cursor_style(), CursorStyle::BlinkingBlock);
+    }
+}
+
 /// 将统一 Key 映射为 vi 编辑命令的扩展 trait。
 pub trait ComputeModeAction {
     fn compute_mode_action(self, key: Key) -> ModeAction;

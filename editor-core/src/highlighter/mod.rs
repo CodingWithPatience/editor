@@ -61,3 +61,77 @@ impl<'a> Highlighter<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annotation_type::AnnotationType;
+
+    #[test]
+    fn new_text_file_no_syntax() {
+        let hl = Highlighter::new(None, None, FileType::Text);
+        assert!(hl.syntax_highlighter.is_none());
+        assert!(hl.search_result_highlighter.is_none());
+    }
+
+    #[test]
+    fn new_rust_file_has_syntax() {
+        let hl = Highlighter::new(None, None, FileType::Rust);
+        assert!(hl.syntax_highlighter.is_some());
+    }
+
+    #[test]
+    fn new_with_search_query() {
+        let hl = Highlighter::new(Some("hello"), None, FileType::Text);
+        assert!(hl.search_result_highlighter.is_some());
+    }
+
+    #[test]
+    fn highlight_text_file_no_search() {
+        let mut hl = Highlighter::new(None, None, FileType::Text);
+        let line = Line::from("hello world");
+        hl.highlight(0, &line);
+        let annotations = hl.get_annotations(0);
+        assert!(annotations.is_empty());
+    }
+
+    #[test]
+    fn highlight_with_search_match() {
+        let mut hl = Highlighter::new(Some("world"), None, FileType::Text);
+        let line = Line::from("hello world");
+        hl.highlight(0, &line);
+        let annotations = hl.get_annotations(0);
+        assert!(!annotations.is_empty());
+        assert!(annotations.iter().any(|a| a.annotation_type == AnnotationType::Match));
+    }
+
+    #[test]
+    fn highlight_with_selected_match() {
+        let selected = Location {
+            line_idx: 0,
+            grapheme_idx: 6,
+        };
+        let mut hl = Highlighter::new(Some("world"), Some(selected), FileType::Text);
+        let line = Line::from("hello world");
+        hl.highlight(0, &line);
+        let annotations = hl.get_annotations(0);
+        assert!(annotations.iter().any(|a| a.annotation_type == AnnotationType::SelectedMatch));
+    }
+
+    #[test]
+    fn highlight_rust_file() {
+        let mut hl = Highlighter::new(None, None, FileType::Rust);
+        let line = Line::from("fn main() {}");
+        hl.highlight(0, &line);
+        let annotations = hl.get_annotations(0);
+        // Rust 语法高亮应产生 Keyword 注解
+        assert!(annotations.iter().any(|a| a.annotation_type == AnnotationType::Keyword));
+    }
+
+    #[test]
+    fn get_annotations_empty_before_highlight() {
+        let hl = Highlighter::new(None, None, FileType::Text);
+        let annotations = hl.get_annotations(0);
+        assert!(annotations.is_empty());
+    }
+}

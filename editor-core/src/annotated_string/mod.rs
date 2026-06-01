@@ -115,3 +115,96 @@ impl<'a> IntoIterator for &'a AnnotatedString {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_string() {
+        let s = AnnotatedString::from("hello");
+        assert_eq!(s.to_string(), "hello");
+        assert_eq!(s.byte_len(), 5);
+    }
+
+    #[test]
+    fn from_empty() {
+        let s = AnnotatedString::from("");
+        assert_eq!(s.to_string(), "");
+        assert_eq!(s.byte_len(), 0);
+    }
+
+    #[test]
+    fn add_annotation() {
+        let mut s = AnnotatedString::from("hello world");
+        s.add_annotation(AnnotationType::Keyword, 0, 5);
+        let parts: Vec<_> = (&s).into_iter().collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].string, "hello");
+        assert_eq!(parts[0].annotated_type, Some(AnnotationType::Keyword));
+        assert_eq!(parts[1].string, " world");
+        assert_eq!(parts[1].annotated_type, None);
+    }
+
+    #[test]
+    fn add_multiple_annotations() {
+        let mut s = AnnotatedString::from("hello world");
+        s.add_annotation(AnnotationType::Keyword, 0, 5);
+        s.add_annotation(AnnotationType::String, 6, 11);
+        let parts: Vec<_> = (&s).into_iter().collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].annotated_type, Some(AnnotationType::Keyword));
+        assert_eq!(parts[1].annotated_type, None); // space
+        assert_eq!(parts[2].annotated_type, Some(AnnotationType::String));
+    }
+
+    #[test]
+    fn truncate_left() {
+        let mut s = AnnotatedString::from("hello world");
+        s.add_annotation(AnnotationType::Keyword, 0, 5);
+        s.truncate_left_until(6);
+        assert_eq!(s.to_string(), "world");
+    }
+
+    #[test]
+    fn truncate_right() {
+        let mut s = AnnotatedString::from("hello world");
+        s.truncate_right_from(5);
+        assert_eq!(s.to_string(), "hello");
+    }
+
+    #[test]
+    fn replace_middle() {
+        let mut s = AnnotatedString::from("hello world");
+        s.replace(5, 6, "-");
+        assert_eq!(s.to_string(), "hello-world");
+    }
+
+    #[test]
+    fn replace_with_annotation_adjust() {
+        let mut s = AnnotatedString::from("hello world");
+        s.add_annotation(AnnotationType::String, 6, 11);
+        s.replace(0, 5, "hi");
+        // "hi world" — annotation should adjust
+        assert_eq!(s.to_string(), "hi world");
+        let parts: Vec<_> = (&s).into_iter().collect();
+        let string_part = parts.iter().find(|p| p.annotated_type == Some(AnnotationType::String));
+        assert!(string_part.is_some());
+        assert_eq!(string_part.unwrap().string, "world");
+    }
+
+    #[test]
+    fn iterator_no_annotations() {
+        let s = AnnotatedString::from("hello");
+        let parts: Vec<_> = (&s).into_iter().collect();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].string, "hello");
+        assert_eq!(parts[0].annotated_type, None);
+    }
+
+    #[test]
+    fn display() {
+        let s = AnnotatedString::from("test");
+        assert_eq!(format!("{s}"), "test");
+    }
+}

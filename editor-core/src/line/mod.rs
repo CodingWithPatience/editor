@@ -550,3 +550,345 @@ impl Deref for Line {
         &self.string
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::WordSeparatorType;
+
+    // --- 构造与基本属性 ---
+
+    #[test]
+    fn empty_line() {
+        let line = Line::from("");
+        assert_eq!(line.grapheme_count(), 0);
+        assert_eq!(line.width(), 0);
+    }
+
+    #[test]
+    fn ascii_line() {
+        let line = Line::from("hello");
+        assert_eq!(line.grapheme_count(), 5);
+        assert_eq!(line.width(), 5);
+    }
+
+    #[test]
+    fn cjk_width() {
+        let line = Line::from("你好");
+        assert_eq!(line.grapheme_count(), 2);
+        assert_eq!(line.width(), 4);
+    }
+
+    #[test]
+    fn mixed_ascii_cjk() {
+        let line = Line::from("hi你好");
+        assert_eq!(line.grapheme_count(), 4);
+        assert_eq!(line.width(), 6);
+    }
+
+    // --- 插入 ---
+
+    #[test]
+    fn insert_char_at_start() {
+        let mut line = Line::from("world");
+        line.insert_char('h', 0);
+        assert_eq!(line.to_string(), "hworld");
+    }
+
+    #[test]
+    fn insert_char_at_end() {
+        let mut line = Line::from("hell");
+        line.insert_char('o', 4);
+        assert_eq!(line.to_string(), "hello");
+    }
+
+    #[test]
+    fn insert_char_in_middle() {
+        let mut line = Line::from("helo");
+        line.insert_char('l', 2);
+        assert_eq!(line.to_string(), "hello");
+    }
+
+    #[test]
+    fn append_char() {
+        let mut line = Line::from("hel");
+        line.append_char('l');
+        line.append_char('o');
+        assert_eq!(line.to_string(), "hello");
+    }
+
+    #[test]
+    fn append_char_str() {
+        let mut line = Line::from("he");
+        line.append_char_str("llo");
+        assert_eq!(line.to_string(), "hello");
+    }
+
+    // --- 删除 ---
+
+    #[test]
+    fn delete_char() {
+        let mut line = Line::from("hello");
+        line.delete(1);
+        assert_eq!(line.to_string(), "hllo");
+    }
+
+    #[test]
+    fn delete_first_char() {
+        let mut line = Line::from("hello");
+        line.delete(0);
+        assert_eq!(line.to_string(), "ello");
+    }
+
+    #[test]
+    fn delete_last_char() {
+        let mut line = Line::from("hello");
+        line.delete(4);
+        assert_eq!(line.to_string(), "hell");
+    }
+
+    // --- 搜索 ---
+
+    #[test]
+    fn search_forward_found() {
+        let line = Line::from("hello world");
+        let result = line.search_forward("world", 0);
+        assert_eq!(result, Some(6));
+    }
+
+    #[test]
+    fn search_forward_not_found() {
+        let line = Line::from("hello");
+        let result = line.search_forward("xyz", 0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn search_forward_from_middle() {
+        let line = Line::from("hello hello");
+        let result = line.search_forward("hello", 1);
+        assert_eq!(result, Some(6));
+    }
+
+    #[test]
+    fn search_backward_found() {
+        let line = Line::from("hello world");
+        let result = line.search_backward("hello", 10);
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn search_backward_not_found() {
+        let line = Line::from("hello");
+        let result = line.search_backward("xyz", 4);
+        assert_eq!(result, None);
+    }
+
+    // --- find_char ---
+
+    #[test]
+    fn find_char_forward_found() {
+        let line = Line::from("hello");
+        assert_eq!(line.find_char_forward(0, 'l'), Some(2));
+    }
+
+    #[test]
+    fn find_char_forward_from_middle() {
+        let line = Line::from("hello");
+        // find_char_forward 从 from+1 开始搜索
+        assert_eq!(line.find_char_forward(2, 'l'), Some(3));
+        assert_eq!(line.find_char_forward(3, 'l'), None);
+    }
+
+    #[test]
+    fn find_char_forward_not_found() {
+        let line = Line::from("hello");
+        assert_eq!(line.find_char_forward(4, 'l'), None);
+    }
+
+    #[test]
+    fn find_char_backward_found() {
+        let line = Line::from("hello");
+        assert_eq!(line.find_char_backward(4, 'l'), Some(3));
+    }
+
+    #[test]
+    fn find_char_backward_from_middle() {
+        let line = Line::from("hello");
+        // find_char_backward 搜索 0..from（排他）
+        assert_eq!(line.find_char_backward(4, 'l'), Some(3));
+        assert_eq!(line.find_char_backward(3, 'l'), Some(2));
+        assert_eq!(line.find_char_backward(2, 'l'), None);
+    }
+
+    #[test]
+    fn find_char_backward_not_found() {
+        let line = Line::from("hello");
+        assert_eq!(line.find_char_backward(1, 'l'), None);
+    }
+
+    // --- 单词跳转 ---
+
+    #[test]
+    fn next_word_start_basic() {
+        let line = Line::from("hello world");
+        let result = line.next_word_start_grapheme_idx(
+            0,
+            WordSeparatorType::Symbol,
+            false,
+        );
+        assert_eq!(result, Some(6));
+    }
+
+    #[test]
+    fn next_word_start_multiple_spaces() {
+        let line = Line::from("hello  world");
+        let result = line.next_word_start_grapheme_idx(
+            0,
+            WordSeparatorType::Symbol,
+            false,
+        );
+        assert_eq!(result, Some(7));
+    }
+
+    #[test]
+    fn next_word_start_at_end() {
+        let line = Line::from("hello");
+        let result = line.next_word_start_grapheme_idx(
+            4,
+            WordSeparatorType::Symbol,
+            false,
+        );
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn word_end_basic() {
+        let line = Line::from("hello world");
+        let result = line.current_or_next_word_end_grapheme_idx(
+            0,
+            WordSeparatorType::Symbol,
+            false,
+            false,
+        );
+        assert_eq!(result, Some(4));
+    }
+
+    // --- split / append ---
+
+    #[test]
+    fn split_line() {
+        let mut line = Line::from("hello world");
+        let rest = line.split(5);
+        assert_eq!(line.to_string(), "hello");
+        assert_eq!(rest.to_string(), " world");
+    }
+
+    #[test]
+    fn append_line() {
+        let mut line = Line::from("hello");
+        let other = Line::from(" world");
+        line.append(&other);
+        assert_eq!(line.to_string(), "hello world");
+    }
+
+    // --- Display / Deref ---
+
+    #[test]
+    fn display() {
+        let line = Line::from("hello");
+        assert_eq!(format!("{line}"), "hello");
+    }
+
+    #[test]
+    fn deref_as_str() {
+        let line = Line::from("hello");
+        assert_eq!(&*line, "hello");
+    }
+
+    // --- width_until ---
+
+    #[test]
+    fn width_until_ascii() {
+        let line = Line::from("hello");
+        assert_eq!(line.width_until(0), 0);
+        assert_eq!(line.width_until(3), 3);
+        assert_eq!(line.width_until(5), 5);
+    }
+
+    #[test]
+    fn width_until_cjk() {
+        let line = Line::from("你好世界");
+        assert_eq!(line.width_until(0), 0);
+        assert_eq!(line.width_until(1), 2);
+        assert_eq!(line.width_until(2), 4);
+        assert_eq!(line.width_until(4), 8);
+    }
+
+    // --- grapheme_idx_to_byte_idx ---
+
+    #[test]
+    fn grapheme_to_byte_ascii() {
+        let line = Line::from("hello");
+        assert_eq!(line.grapheme_idx_to_byte_idx(0), 0);
+        assert_eq!(line.grapheme_idx_to_byte_idx(3), 3);
+        assert_eq!(line.grapheme_idx_to_byte_idx(5), 5);
+    }
+
+    #[test]
+    fn grapheme_to_byte_cjk() {
+        let line = Line::from("你好");
+        assert_eq!(line.grapheme_idx_to_byte_idx(0), 0);
+        assert_eq!(line.grapheme_idx_to_byte_idx(1), 3);
+        assert_eq!(line.grapheme_idx_to_byte_idx(2), 6);
+    }
+
+    // --- delete_word_forward_from / delete_word_backward_from ---
+
+    #[test]
+    fn delete_word_forward() {
+        let mut line = Line::from("hello world");
+        line.delete_word_forward_from(0);
+        assert_eq!(line.to_string(), " world");
+    }
+
+    #[test]
+    fn delete_word_backward() {
+        let mut line = Line::from("hello world");
+        line.delete_word_backward_from(11);
+        assert_eq!(line.to_string(), "hello ");
+    }
+
+    // --- first_visible_grapheme_idx ---
+
+    #[test]
+    fn first_visible_grapheme_idx_empty() {
+        let line = Line::from("");
+        assert_eq!(line.first_visible_grapheme_idx(), 0);
+    }
+
+    #[test]
+    fn first_visible_grapheme_idx_with_spaces() {
+        let line = Line::from("  hello");
+        assert_eq!(line.first_visible_grapheme_idx(), 2);
+    }
+
+    // --- find_all ---
+
+    #[test]
+    fn find_all_multiple() {
+        let line = Line::from("abc abc abc");
+        let results = line.find_all("abc", 0..line.len());
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].1, 0);
+        assert_eq!(results[1].1, 4);
+        assert_eq!(results[2].1, 8);
+    }
+
+    #[test]
+    fn find_all_none() {
+        let line = Line::from("hello");
+        let results = line.find_all("xyz", 0..line.len());
+        assert!(results.is_empty());
+    }
+}

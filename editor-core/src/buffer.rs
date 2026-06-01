@@ -570,3 +570,379 @@ impl Buffer {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prelude::{Location, WordSeparatorType};
+
+    fn loc(line_idx: usize, grapheme_idx: usize) -> Location {
+        Location {
+            line_idx,
+            grapheme_idx,
+        }
+    }
+
+    // --- 默认状态 ---
+
+    #[test]
+    fn default_buffer() {
+        let buf = Buffer::default();
+        assert!(buf.is_empty());
+        assert_eq!(buf.height(), 0);
+        assert!(!buf.is_dirty());
+        assert!(!buf.is_file_loaded());
+    }
+
+    // --- 插入 ---
+
+    #[test]
+    fn insert_char_creates_line() {
+        let mut buf = Buffer::default();
+        buf.insert_char('h', loc(0, 0));
+        assert_eq!(buf.height(), 1);
+        assert!(buf.is_dirty());
+        assert_eq!(buf.get_line_content(0), Some("h".to_string()));
+    }
+
+    #[test]
+    fn insert_multiple_chars() {
+        let mut buf = Buffer::default();
+        buf.insert_char('h', loc(0, 0));
+        buf.insert_char('e', loc(0, 1));
+        buf.insert_char('l', loc(0, 2));
+        buf.insert_char('l', loc(0, 3));
+        buf.insert_char('o', loc(0, 4));
+        assert_eq!(buf.get_line_content(0), Some("hello".to_string()));
+    }
+
+    // --- 删除 ---
+
+    #[test]
+    fn delete_char() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        buf.delete(loc(0, 1));
+        assert_eq!(buf.get_line_content(0), Some("hllo".to_string()));
+    }
+
+    // --- 换行 ---
+
+    #[test]
+    fn insert_newline() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        buf.insert_newline(loc(0, 5));
+        assert_eq!(buf.height(), 2);
+        assert_eq!(buf.get_line_content(0), Some("hello".to_string()));
+        assert_eq!(buf.get_line_content(1), Some(" world".to_string()));
+    }
+
+    // --- 删除行 ---
+
+    #[test]
+    fn delete_line() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["line1".into(), "line2".into(), "line3".into()]);
+        let deleted = buf.delete_line(1);
+        assert_eq!(deleted, Some("line2".to_string()));
+        assert_eq!(buf.height(), 2);
+        assert_eq!(buf.get_line_content(0), Some("line1".to_string()));
+        assert_eq!(buf.get_line_content(1), Some("line3".to_string()));
+    }
+
+    #[test]
+    fn delete_only_line() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["only".into()]);
+        let deleted = buf.delete_line(0);
+        assert_eq!(deleted, Some("only".to_string()));
+        assert_eq!(buf.height(), 1);
+        assert_eq!(buf.get_line_content(0), Some("".to_string()));
+    }
+
+    // --- 合并行 ---
+
+    #[test]
+    fn join_next_line() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into(), "world".into()]);
+        buf.join_next_line(0);
+        assert_eq!(buf.height(), 1);
+        assert_eq!(buf.get_line_content(0), Some("helloworld".to_string()));
+    }
+
+    // --- set_lines / get_all_lines ---
+
+    #[test]
+    fn set_lines_and_get_all() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["aaa".into(), "bbb".into(), "ccc".into()]);
+        assert_eq!(buf.height(), 3);
+        assert_eq!(buf.get_all_lines(), vec!["aaa", "bbb", "ccc"]);
+    }
+
+    #[test]
+    fn set_line_content() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["old".into()]);
+        buf.set_line_content(0, "new");
+        assert_eq!(buf.get_line_content(0), Some("new".to_string()));
+    }
+
+    // --- get_line_content 越界 ---
+
+    #[test]
+    fn get_line_content_out_of_bounds() {
+        let buf = Buffer::default();
+        assert_eq!(buf.get_line_content(0), None);
+    }
+
+    // --- grapheme_count ---
+
+    #[test]
+    fn grapheme_count_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        assert_eq!(buf.grapheme_count(0), 5);
+    }
+
+    #[test]
+    fn grapheme_count_out_of_bounds() {
+        let buf = Buffer::default();
+        assert_eq!(buf.grapheme_count(0), 0);
+    }
+
+    // --- last_line_idx ---
+
+    #[test]
+    fn last_line_idx_empty() {
+        let buf = Buffer::default();
+        assert_eq!(buf.last_line_idx(), 0);
+    }
+
+    #[test]
+    fn last_line_idx_non_empty() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["a".into(), "b".into(), "c".into()]);
+        assert_eq!(buf.last_line_idx(), 2);
+    }
+
+    // --- 搜索 ---
+
+    #[test]
+    fn search_forward_found() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into(), "world".into()]);
+        let result = buf.search_forward("world", loc(0, 0));
+        assert_eq!(result, Some(loc(1, 0)));
+    }
+
+    #[test]
+    fn search_forward_same_line() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        let result = buf.search_forward("world", loc(0, 0));
+        assert_eq!(result, Some(loc(0, 6)));
+    }
+
+    #[test]
+    fn search_forward_wrap_around() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into(), "world".into()]);
+        let result = buf.search_forward("hello", loc(1, 0));
+        assert_eq!(result, Some(loc(0, 0)));
+    }
+
+    #[test]
+    fn search_forward_not_found() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        let result = buf.search_forward("xyz", loc(0, 0));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn search_backward_found() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into(), "world".into()]);
+        let result = buf.search_backward("hello", loc(1, 0));
+        assert_eq!(result, Some(loc(0, 0)));
+    }
+
+    #[test]
+    fn search_backward_wrap_around() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into(), "world".into()]);
+        let result = buf.search_backward("world", loc(0, 0));
+        assert_eq!(result, Some(loc(1, 0)));
+    }
+
+    // --- 单词导航 ---
+
+    #[test]
+    fn next_word_location_start_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world foo".into()]);
+        let result = buf.next_word_location_start(&loc(0, 0), WordSeparatorType::Symbol);
+        assert_eq!(result, loc(0, 6));
+    }
+
+    #[test]
+    fn current_or_prev_word_location_start_at_word() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        // 在 word 中间，应该找到当前或前一个 word 的起始
+        let result = buf.current_or_prev_word_location_start(&loc(0, 2), WordSeparatorType::Symbol);
+        assert_eq!(result.line_idx, 0);
+        // 结果应该是某个 word 的起始位置
+        assert!(result.grapheme_idx <= 2);
+    }
+
+    // --- 括号匹配 ---
+
+    #[test]
+    fn find_matching_bracket_forward() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["(hello)".into()]);
+        let result = buf.find_matching_bracket(loc(0, 0), '(', ')', true);
+        assert_eq!(result, Some(loc(0, 6)));
+    }
+
+    #[test]
+    fn find_matching_bracket_backward() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["(hello)".into()]);
+        let result = buf.find_matching_bracket(loc(0, 6), '(', ')', false);
+        assert_eq!(result, Some(loc(0, 0)));
+    }
+
+    #[test]
+    fn find_matching_bracket_nested() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["(a(b)c)".into()]);
+        let result = buf.find_matching_bracket(loc(0, 0), '(', ')', true);
+        assert_eq!(result, Some(loc(0, 6)));
+    }
+
+    #[test]
+    fn find_matching_bracket_not_found() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["(hello".into()]);
+        let result = buf.find_matching_bracket(loc(0, 0), '(', ')', true);
+        assert_eq!(result, None);
+    }
+
+    // --- inner_word_range ---
+
+    #[test]
+    fn inner_word_range_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        let result = buf.inner_word_range(&loc(0, 2));
+        assert_eq!(result, Some((loc(0, 0), loc(0, 5))));
+    }
+
+    #[test]
+    fn inner_word_range_on_space() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        let result = buf.inner_word_range(&loc(0, 5));
+        assert_eq!(result, None);
+    }
+
+    // --- find_char_on_line ---
+
+    #[test]
+    fn find_char_on_line_forward() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        let result = buf.find_char_on_line(0, 0, 'l', true);
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn find_char_on_line_backward() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        let result = buf.find_char_on_line(0, 4, 'l', false);
+        assert_eq!(result, Some(3));
+    }
+
+    // --- find_next_word_start_on_line ---
+
+    #[test]
+    fn find_next_word_start_on_line_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world foo".into()]);
+        let result = buf.find_next_word_start_on_line(0, 0);
+        assert_eq!(result, Some(6));
+    }
+
+    // --- delete_word_forward / delete_word_backward ---
+
+    #[test]
+    fn delete_word_forward_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        buf.delete_word_forward(loc(0, 0));
+        assert_eq!(buf.get_line_content(0), Some(" world".to_string()));
+    }
+
+    #[test]
+    fn delete_word_backward_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello world".into()]);
+        buf.delete_word_backward(loc(0, 11));
+        assert_eq!(buf.get_line_content(0), Some("hello ".to_string()));
+    }
+
+    // --- save / load ---
+
+    #[test]
+    fn save_as_and_load() {
+        let tmp = std::env::temp_dir().join("editor_test_buffer_save.txt");
+        let path = tmp.to_str().unwrap().to_string();
+
+        let mut buf = Buffer::default();
+        buf.set_lines(&["line1".into(), "line2".into()]);
+        buf.save_as(&path).unwrap();
+
+        let loaded = Buffer::load(&path).unwrap();
+        assert_eq!(loaded.height(), 2);
+        assert_eq!(loaded.get_line_content(0), Some("line1".to_string()));
+        assert_eq!(loaded.get_line_content(1), Some("line2".to_string()));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // --- grapheme_to_byte ---
+
+    #[test]
+    fn grapheme_to_byte_ascii() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        assert_eq!(buf.grapheme_to_byte(0, 0), 0);
+        assert_eq!(buf.grapheme_to_byte(0, 3), 3);
+        assert_eq!(buf.grapheme_to_byte(0, 5), 5);
+    }
+
+    #[test]
+    fn grapheme_to_byte_cjk() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["你好".into()]);
+        assert_eq!(buf.grapheme_to_byte(0, 0), 0);
+        assert_eq!(buf.grapheme_to_byte(0, 1), 3);
+        assert_eq!(buf.grapheme_to_byte(0, 2), 6);
+    }
+
+    // --- column_to_byte ---
+
+    #[test]
+    fn column_to_byte_basic() {
+        let mut buf = Buffer::default();
+        buf.set_lines(&["hello".into()]);
+        assert_eq!(buf.column_to_byte(0, 0), 0);
+        assert_eq!(buf.column_to_byte(0, 3), 3);
+    }
+}
