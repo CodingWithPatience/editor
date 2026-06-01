@@ -43,8 +43,8 @@ impl ThemeColors {
             search_match_bg: rgb(theme.search_match_bg, Color32::from_rgb(80, 80, 0)),
             search_selected_bg: rgb(theme.search_selected_bg, Color32::from_rgb(120, 120, 0)),
             prompt_bg: rgb(theme.prompt_bg, Color32::from_rgb(40, 40, 50)),
-            line_number: rgb(theme.line_number, Color32::from_rgb(100, 130, 200)),
-            line_number_active: rgb(theme.line_number_active, Color32::from_rgb(100, 100, 100)),
+            line_number: rgb(theme.line_number, Color32::from_rgb(100, 100, 100)),
+            line_number_active: rgb(theme.line_number_active, Color32::from_rgb(100, 130, 200)),
             keyword: rgb(theme.keyword, Color32::from_rgb(100, 149, 237)),
             string_color: rgb(theme.string_color, Color32::from_rgb(255, 179, 102)),
             comment: rgb(theme.comment, Color32::from_rgb(87, 166, 74)),
@@ -72,8 +72,8 @@ pub fn annotation_to_color(annotation_type: AnnotationType, theme: &ThemeColors)
         AnnotationType::LifetimeSpecifier => theme.lifetime,
         AnnotationType::Comment => theme.comment,
         AnnotationType::String => theme.string_color,
-        AnnotationType::LineNumber => theme.line_number,
-        AnnotationType::LineNumberSection => theme.line_number_active,
+        AnnotationType::LineNumber => theme.line_number_active,
+        AnnotationType::LineNumberSection => theme.line_number,
         AnnotationType::Selection => theme.selection_text,
     }
 }
@@ -98,7 +98,7 @@ pub const PROMPT_BG_COLOR: Color32 = Color32::from_rgb(40, 40, 50);
 pub const GUTTER_CHARS: usize = 6;
 
 /// 构建带行号、语法高亮和选择高亮的 LayoutJob。
-/// `sel_range`: (start_line, start_graheme, end_line, end_graheme)
+/// `sel_range`: (start_line, start_grapheme, end_line, end_grapheme)
 /// 坐标使用 grapheme 索引（非 char 索引），与 Buffer API 一致。
 #[allow(dead_code)]
 pub fn build_layout_job(
@@ -115,9 +115,9 @@ pub fn build_layout_job(
 
         // --- 行号 ---
         let number_color = if is_cursor {
-            theme.line_number
-        } else {
             theme.line_number_active
+        } else {
+            theme.line_number
         };
         let number_text = format!("{:>w$} ", line_idx + 1, w = gutter_fmt);
         job.append(

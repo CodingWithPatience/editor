@@ -186,9 +186,17 @@ impl EditorApp {
                 egui::Event::Ime(ime_event) => {
                     match ime_event {
                         egui::ImeEvent::Enabled => {
-                            self.ime_composing = true;
+                            // 不在此设置 ime_composing，
+                            // 仅在 Preedit 时标记为组合中
                         }
                         egui::ImeEvent::Disabled => {
+                            self.ime_composing = false;
+                        }
+                        egui::ImeEvent::Preedit(text) if !text.is_empty() => {
+                            self.ime_composing = true;
+                        }
+                        egui::ImeEvent::Preedit(_) => {
+                            // 空 Preedit 表示组合取消
                             self.ime_composing = false;
                         }
                         egui::ImeEvent::Commit(text) => {
@@ -213,17 +221,18 @@ impl EditorApp {
                                 dirty = true;
                             }
                         }
-                        _ => {}
                     }
                 }
-                // IME 活跃帧内跳过 Event::Key 和 Event::Text，
+                // Insert 模式下 IME 活跃时跳过 Event::Key 和 Event::Text，
                 // 避免原始按键/文本与 IME Commit 重复写入
                 egui::Event::Key { .. }
-                    if self.ime_composing || ime_active =>
+                    if self.mode == Mode::Insert
+                        && (self.ime_composing || ime_active) =>
                 {
                 }
                 egui::Event::Text(_)
-                    if self.ime_composing || ime_active =>
+                    if self.mode == Mode::Insert
+                        && (self.ime_composing || ime_active) =>
                 {
                 }
                 egui::Event::Key {
@@ -1487,10 +1496,34 @@ impl eframe::App for EditorApp {
                 let panel_top = avail_rect.top();
 
                 let scroll_id = ui.make_persistent_id("edit_scroll");
+                let mut scroll_offset_y: f32 = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp(scroll_id))
+                    .unwrap_or(0.0);
+
+                // 滚动同步：光标超出可见区域时调整滚动偏移
+                let visible_h = panel_h;
+                let c_top = self.text_location.line_idx as f32 * row_h;
+                let c_bot = c_top + row_h;
+                if visible_h > 0.0 && (c_top < scroll_offset_y || c_bot > scroll_offset_y + visible_h) {
+                    scroll_offset_y = if c_top < scroll_offset_y {
+                        c_top
+                    } else {
+                        (c_bot - visible_h).max(0.0)
+                    };
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(scroll_id, scroll_offset_y));
+                    ctx.request_repaint();
+                }
+
                 let scroll_out = egui::ScrollArea::vertical()
                     .id_salt(scroll_id)
+                    .vertical_scroll_offset(scroll_offset_y)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
+                        // 分配完整内容空间
+                        let avail_w = ui.available_width();
+                        ui.allocate_space(egui::vec2(avail_w, content_h));
                         // gutter 背景
                         ui.painter().rect_filled(
                             Rect::from_min_size(pos2(0.0, 0.0), vec2(gutter_px, content_h)),
@@ -1552,14 +1585,11 @@ impl eframe::App for EditorApp {
                             let is_cursor = li == self.text_location.line_idx;
                             // 行号
                             let ln_color = if is_cursor {
-                                self.theme_colors.line_number
-                            } else {
                                 self.theme_colors.line_number_active
+                            } else {
+                                self.theme_colors.line_number
                             };
                             let ln_text = format!("{:>w$} ", li + 1, w = GUTTER_CHARS - 1);
-                            ui.fonts(|f| {
-                                f.layout(ln_text.clone(), font_id.clone(), ln_color, f32::INFINITY)
-                            });
                             ui.painter().text(
                                 pos2(0.0, y),
                                 egui::Align2::LEFT_TOP,
@@ -1653,8 +1683,14 @@ impl eframe::App for EditorApp {
                         }
                     });
 
-                let scroll_y = scroll_out.state.offset.y;
-                let cursor_y = panel_top + self.text_location.line_idx as f32 * row_h - scroll_y;
+                // 读回 ScrollArea 处理滚轮后的最终偏移量
+                let scroll_final = scroll_out.state.offset.y;
+                if (scroll_final - scroll_offset_y).abs() > 0.5 {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(scroll_id, scroll_final));
+                }
+
+                let cursor_y = panel_top + self.text_location.line_idx as f32 * row_h - scroll_final;
                 // 计算光标 X 坐标：基于实际字符宽度（CJK 字符宽度约为 ASCII 两倍）
                 let cursor_x = {
                     let line_content = self
@@ -1755,20 +1791,6 @@ impl eframe::App for EditorApp {
                             );
                         }
                     }
-                }
-                // 滚动同步
-                let c_top = self.text_location.line_idx as f32 * row_h;
-                let c_bot = c_top + row_h;
-                if (c_top < scroll_y || c_bot > scroll_y + panel_h) && panel_h > 0.0 {
-                    let target = if c_top < scroll_y {
-                        c_top
-                    } else {
-                        (c_bot - panel_h).max(0.0)
-                    };
-                    let mut s = scroll_out.state;
-                    s.offset.y = target;
-                    s.store(ui.ctx(), scroll_id);
-                    ctx.request_repaint();
                 }
             });
 
