@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-- **已完成阶段**：阶段 1, 阶段 2, 阶段 3, 阶段 4, 阶段 5
-- **当前进行中**：阶段 6 - 双模式共存 + 完善
-- **最后更新**：2026-05-28
+- **已完成阶段**：阶段 1, 阶段 2, 阶段 3, 阶段 4, 阶段 5, 阶段 6
+- **当前进行中**：无（全部完成）
+- **最后更新**：2026-06-01
 
 ---
 
@@ -317,15 +317,33 @@ editor/                          # workspace 根
 
 ---
 
-## 阶段 6：双模式共存 + 完善
+## 已完成：阶段 6 - 双模式共存 + 完善
 
-> **优先级：P3** | **状态：未开始**
+### 完成摘要
 
-### 核心任务
-- [ ] 统一入口（--gui 参数）
-- [ ] 视觉优化（主题、字体、光标闪烁）
-- [ ] 配置文件支持
-- [ ] 单元测试 + 回归测试
+**新增功能：**
+- **单元测试**：为 editor-core 全部 7 个模块添加 180 个单元测试（line、buffer、command::mode、grapheme_type、annotated_string、highlighter、config）
+- **配置文件**：新增 `editor-core/src/config.rs`，支持 `.editor.toml` 配置文件（serde + toml + dirs），配置项包括字体路径/大小、光标闪烁间隔、18 种主题颜色
+- **光标闪烁**：GUI 版 Insert/Normal 模式光标按配置间隔闪烁，Visual/Command 模式常亮，按键/IME 重置为可见
+- **主题颜色**：新增 `ThemeColors` 结构体从配置解析颜色，替换所有硬编码颜色常量，支持运行时自定义
+- **字体配置**：字体路径和大小从配置文件读取，fallback 到 OS 默认 CJK 字体
+- **统一入口**：editor-term 支持 `--gui` 参数，通过 spawn 启动 editor-gui 二进制
+
+**架构变更：**
+- `editor-core` 新增 serde/toml/dirs 依赖
+- `gui_renderer.rs` 的颜色常量改为 `ThemeColors` 结构体方法
+- `annotation_to_color()` 和 `build_layout_job()` 改为接受 `&ThemeColors` 参数
+
+**用法：**
+- `editor file.txt` — 终端模式（默认）
+- `editor --gui file.txt` — GUI 模式
+- `.editor.toml` 配置文件（可选，查找顺序：EDITOR_CONFIG 环境变量 → ./.editor.toml → ~/.editor.toml）
+
+---
+
+## 阶段 6：双模式共存 + 完善 ✅
+
+> **优先级：P3** | **状态：已完成**
 
 ---
 
