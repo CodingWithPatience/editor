@@ -138,10 +138,18 @@ impl ComputeModeAction for Mode {
                     command_list: Some(vec![CommandType::Edit(CommandEdit::DeleteToLineStart)]),
                 },
                 _ => {
-                    let command_list = Mode::try_command_list(key);
-                    ModeAction {
-                        mode: self,
-                        command_list,
+                    // System 命令（Ctrl+S/Q/F 等）在任何模式下都生效
+                    if let Ok(system) = System::from_key(key) {
+                        ModeAction {
+                            mode: Mode::System(system),
+                            command_list: Some(vec![CommandType::System(system)]),
+                        }
+                    } else {
+                        let command_list = Mode::try_command_list(key);
+                        ModeAction {
+                            mode: self,
+                            command_list,
+                        }
                     }
                 }
             },
@@ -565,7 +573,13 @@ impl ComputeModeAction for Mode {
                     ]),
                 },
                 _ => {
-                    if let Ok(move_cmd) = CommandMove::from_key(key) {
+                    // System 命令（Ctrl+S/Q/F 等）在任何模式下都生效
+                    if let Ok(system) = System::from_key(key) {
+                        ModeAction {
+                            mode: Mode::System(system),
+                            command_list: Some(vec![CommandType::System(system)]),
+                        }
+                    } else if let Ok(move_cmd) = CommandMove::from_key(key) {
                         ModeAction {
                             mode: self,
                             command_list: Some(vec![CommandType::Move(move_cmd)]),

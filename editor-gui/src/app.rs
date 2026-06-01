@@ -395,6 +395,11 @@ impl EditorApp {
             }
         }
 
+        // System 命令执行后恢复原模式（Save/Quit/Search 等不需要改变当前编辑模式）
+        if matches!(self.mode, Mode::System(_)) {
+            self.mode = mode_before;
+        }
+
         // 在命令执行之后清除selection信息，确保DeleteSelection等命令能正确获取selection
         if clear_selection {
             self.selection_anchor = None;
