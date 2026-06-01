@@ -28,7 +28,6 @@ enum PromptType {
     Search,
     SearchBackward,
     CommandMode,
-    Save,
 }
 
 #[derive(Clone)]
@@ -1173,9 +1172,7 @@ impl EditorApp {
                 Err(e) => self.show_message(&format!("Error: {e}")),
             }
         } else {
-            self.prompt_type = PromptType::Save;
-            self.input_text.clear();
-            self.input_focus_requested = true;
+            self.show_save_dialog();
         }
     }
 
@@ -1259,12 +1256,6 @@ impl EditorApp {
             PromptType::CommandMode => {
                 self.execute_command_input();
             }
-            PromptType::Save => {
-                if !self.input_text.is_empty() {
-                    let path = self.input_text.clone();
-                    self.save_as(&path);
-                }
-            }
             PromptType::None => {}
         }
         self.prompt_type = PromptType::None;
@@ -1278,7 +1269,6 @@ impl EditorApp {
             PromptType::Search => "/ ",
             PromptType::SearchBackward => "? ",
             PromptType::CommandMode => ": ",
-            PromptType::Save => "Save as: ",
             PromptType::None => "",
         };
 
