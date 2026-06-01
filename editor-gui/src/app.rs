@@ -1,7 +1,4 @@
-use crate::gui_renderer::{
-    annotation_to_color, CURSOR_COLOR, DEFAULT_TEXT_COLOR, EDITOR_BG_COLOR, GUTTER_CHARS,
-    PROMPT_BG_COLOR, SEARCH_MATCH_BG_COLOR, SEARCH_SELECTED_BG_COLOR, SELECTION_BG_COLOR,
-};
+use crate::gui_renderer::{annotation_to_color, ThemeColors, GUTTER_CHARS};
 use crate::keymap::egui_to_key;
 use editor_core::annotation_type::AnnotationType;
 use editor_core::buffer::Buffer;
@@ -9,12 +6,13 @@ use editor_core::command::edit::Edit;
 use editor_core::command::mode::{CommandValue, ComputeModeAction, Mode};
 use editor_core::command::move_command::Move;
 use editor_core::command::system::System;
+use editor_core::config::EditorConfig;
 use editor_core::highlighter::Highlighter;
 use editor_core::key::Key;
 use editor_core::prelude::Location;
 use egui::{pos2, vec2, Color32, Rect};
 use std::cmp::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_UNDO_DEPTH: usize = 1000;
@@ -66,11 +64,18 @@ pub struct EditorApp {
     quit_times: u8,
     /// IME 是否处于组合状态（Preedit 活跃时过滤 Event::Key）
     ime_composing: bool,
+    // --- 阶段 6：配置与视觉优化 ---
+    config: EditorConfig,
+    theme_colors: ThemeColors,
+    cursor_blink_visible: bool,
+    cursor_last_toggle: Instant,
 }
 
 impl EditorApp {
     /// 创建编辑器应用实例。filename 为 None 时创建空白缓冲区。
     pub fn new(filename: Option<String>) -> Self {
+        let config = EditorConfig::load();
+        let theme_colors = ThemeColors::from_config(&config.theme);
         let mut app = Self {
             buffer: Buffer::default(),
             filename: filename.clone(),
@@ -97,6 +102,10 @@ impl EditorApp {
             message_time: None,
             quit_times: 0,
             ime_composing: false,
+            config,
+            theme_colors,
+            cursor_blink_visible: true,
+            cursor_last_toggle: Instant::now(),
         };
         if let Some(ref name) = filename {
             if let Ok(buf) = Buffer::load(name) {
@@ -184,6 +193,8 @@ impl EditorApp {
                         }
                         egui::ImeEvent::Commit(text) => {
                             self.ime_composing = false;
+                            self.cursor_blink_visible = true;
+                            self.cursor_last_toggle = Instant::now();
                             if self.prompt_type == PromptType::None
                                 && self.mode == Mode::Insert
                             {
@@ -231,6 +242,9 @@ impl EditorApp {
                             dirty = true;
                         }
                     } else if let Some(k) = egui_to_key(*key, *modifiers) {
+                        // 按键时重置光标闪烁为可见
+                        self.cursor_blink_visible = true;
+                        self.cursor_last_toggle = Instant::now();
                         let mode_before = self.mode;
                         dirty |= self.handle_key(k);
                         // 模式切换时控制 IME 开关
@@ -1387,7 +1401,9 @@ impl eframe::App for EditorApp {
             ctx.set_style(s);
             // 加载 CJK 字体支持中文显示
             let mut fonts = egui::FontDefinitions::default();
-            let cjk_font_path: Option<&str> = if cfg!(target_os = "windows") {
+            let cjk_font_path: Option<&str> = if let Some(ref p) = self.config.font.path {
+                Some(p.as_str())
+            } else if cfg!(target_os = "windows") {
                 Some("C:\\Windows\\Fonts\\msyh.ttc")
             } else if cfg!(target_os = "macos") {
                 Some("/System/Library/Fonts/PingFang.ttc")
@@ -1433,7 +1449,7 @@ impl eframe::App for EditorApp {
         egui::TopBottomPanel::bottom("prompt_or_message")
             .frame(
                 egui::Frame::default()
-                    .fill(PROMPT_BG_COLOR)
+                    .fill(self.theme_colors.prompt_bg)
                     .inner_margin(4.0),
             )
             .show(ctx, |ui| {
@@ -1446,9 +1462,9 @@ impl eframe::App for EditorApp {
 
         // 中央编辑区域 — 全 Painter 手动渲染
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(EDITOR_BG_COLOR))
+            .frame(egui::Frame::default().fill(self.theme_colors.background))
             .show(ctx, |ui| {
-                let font_id = egui::FontId::monospace(16.0);
+                let font_id = egui::FontId::monospace(self.config.font.size);
                 let row_h = ui.fonts(|f| f.row_height(&font_id));
                 // 精确字符宽度：layout 测试串并取平均
                 let test = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW";
@@ -1479,7 +1495,7 @@ impl eframe::App for EditorApp {
                         ui.painter().rect_filled(
                             Rect::from_min_size(pos2(0.0, 0.0), vec2(gutter_px, content_h)),
                             0.0,
-                            EDITOR_BG_COLOR,
+                            self.theme_colors.background,
                         );
                         // 渲染每一行
                         let sel = self.selection_range();
@@ -1536,9 +1552,9 @@ impl eframe::App for EditorApp {
                             let is_cursor = li == self.text_location.line_idx;
                             // 行号
                             let ln_color = if is_cursor {
-                                annotation_to_color(AnnotationType::LineNumber)
+                                self.theme_colors.line_number
                             } else {
-                                annotation_to_color(AnnotationType::LineNumberSection)
+                                self.theme_colors.line_number_active
                             };
                             let ln_text = format!("{:>w$} ", li + 1, w = GUTTER_CHARS - 1);
                             ui.fonts(|f| {
@@ -1588,11 +1604,11 @@ impl eframe::App for EditorApp {
                                 for part in &annotated {
                                     let color = part
                                         .annotated_type
-                                        .map(annotation_to_color)
-                                        .unwrap_or(DEFAULT_TEXT_COLOR);
+                                        .map(|at| annotation_to_color(at, &self.theme_colors))
+                                        .unwrap_or(self.theme_colors.text);
                                     let part_bg = match part.annotated_type {
-                                        Some(AnnotationType::Match) => Some(SEARCH_MATCH_BG_COLOR),
-                                        Some(AnnotationType::SelectedMatch) => Some(SEARCH_SELECTED_BG_COLOR),
+                                        Some(AnnotationType::Match) => Some(self.theme_colors.search_match_bg),
+                                        Some(AnnotationType::SelectedMatch) => Some(self.theme_colors.search_selected_bg),
                                         _ => None,
                                     };
                                     let part_str = part.string;
@@ -1609,13 +1625,13 @@ impl eframe::App for EditorApp {
                                         });
                                         let gw = g_gal.rect.width();
                                         let bg = if sel.is_some() && gi >= gs && gi < ge {
-                                            SELECTION_BG_COLOR
+                                            self.theme_colors.selection_bg
                                         } else if let Some(pbg) = part_bg {
                                             pbg
                                         } else {
-                                            EDITOR_BG_COLOR
+                                            self.theme_colors.background
                                         };
-                                        if bg != EDITOR_BG_COLOR {
+                                        if bg != self.theme_colors.background {
                                             ui.painter().rect_filled(
                                                 Rect::from_min_size(pos2(px, y), vec2(gw, row_h)),
                                                 0.0,
@@ -1661,8 +1677,27 @@ impl eframe::App for EditorApp {
                     });
                     panel_left + gutter_px + gal.rect.width()
                 };
-                // 绘制光标（提示栏活跃时隐藏编辑区光标）
+                // 光标闪烁逻辑
+                let blink_interval =
+                    Duration::from_millis(self.config.cursor.blink_interval_ms);
+                let now = Instant::now();
+                if matches!(self.mode, Mode::Insert | Mode::Normal)
+                    && now.duration_since(self.cursor_last_toggle) >= blink_interval
+                {
+                    self.cursor_blink_visible = !self.cursor_blink_visible;
+                    self.cursor_last_toggle = now;
+                }
+                // Visual/Command 模式下光标常亮
+                if matches!(
+                    self.mode,
+                    Mode::Visual | Mode::VisualLine | Mode::Command
+                ) {
+                    self.cursor_blink_visible = true;
+                }
+
+                // 绘制光标（提示栏活跃时或闪烁不可见时隐藏编辑区光标）
                 if self.prompt_type == PromptType::None
+                    && self.cursor_blink_visible
                     && cursor_y >= panel_top - row_h
                     && cursor_y < panel_top + panel_h + row_h
                 {
@@ -1671,7 +1706,7 @@ impl eframe::App for EditorApp {
                             ui.painter().rect_filled(
                                 Rect::from_min_size(pos2(cursor_x, cursor_y), vec2(2.0, row_h)),
                                 0.0,
-                                CURSOR_COLOR,
+                                self.theme_colors.cursor,
                             );
                         }
                         _ => {
@@ -1738,6 +1773,6 @@ impl eframe::App for EditorApp {
             });
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title.clone()));
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(Duration::from_millis(self.config.cursor.blink_interval_ms));
     }
 }
