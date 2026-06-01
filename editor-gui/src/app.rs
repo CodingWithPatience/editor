@@ -185,24 +185,34 @@ impl EditorApp {
                         }
                         egui::ImeEvent::Commit(text) => {
                             self.ime_composing = false;
-                            if self.prompt_type != PromptType::None {
-                                // Command/Search/Save 提示栏：追加到输入文本
-                                self.input_text.push_str(text);
-                                dirty = true;
-                            } else if self.mode == Mode::Insert {
-                                // Insert 模式：写入 buffer
+                            if self.prompt_type == PromptType::None
+                                && self.mode == Mode::Insert
+                            {
+                                // Insert 模式：IME 文本写入 buffer
                                 for ch in text.chars() {
                                     self.buffer.insert_char(ch, self.text_location);
                                     self.text_location.grapheme_idx += 1;
                                 }
+                                dirty = true;
+                            } else if matches!(
+                                self.prompt_type,
+                                PromptType::Search | PromptType::SearchBackward
+                            ) {
+                                // 搜索模式：TextEdit 已更新 input_text，触发增量搜索
+                                self.do_incremental_search();
                                 dirty = true;
                             }
                         }
                         _ => {}
                     }
                 }
-                // IME 活跃帧内跳过 Event::Key，避免原始按键写入 buffer
+                // IME 活跃帧内跳过 Event::Key 和 Event::Text，
+                // 避免原始按键/文本与 IME Commit 重复写入
                 egui::Event::Key { .. }
+                    if self.ime_composing || ime_active =>
+                {
+                }
+                egui::Event::Text(_)
                     if self.ime_composing || ime_active =>
                 {
                 }
