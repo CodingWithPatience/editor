@@ -3,6 +3,7 @@ pub mod annotation;
 pub mod annotation_type;
 pub mod buffer;
 pub mod command;
+pub mod config;
 pub mod document_status;
 pub mod event_source;
 pub mod file_info;
