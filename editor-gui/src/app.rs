@@ -44,13 +44,15 @@ struct EditorMetrics {
     avail_rect: Rect,
     panel_h: f32,
     content_h: f32,
-    content_w: f32,
     max_scroll_y: f32,
     max_scroll_x: f32,
     panel_left: f32,
     panel_top: f32,
+    /// 光标在文本内容坐标系中的 X（不含行号宽度）
     cursor_x_in_content: f32,
     total: usize,
+    /// 文本最大像素宽度（不含行号）
+    max_text_width: f32,
     /// 纵向滚动 ID 与当前偏移
     scroll_id: egui::Id,
     scroll_offset_y: f32,
@@ -1495,15 +1497,54 @@ impl EditorApp {
             });
     }
 
-    /// 渲染中央编辑区域：布局预计算 → ScrollArea行渲染 → 光标绘制
+    /// 渲染中央编辑区域：行号固定左侧 + 文本 ScrollArea + 光标
     fn render_edit_area(&mut self, ctx: &egui::Context, buffer_changed: bool) {
         let bg = self.theme_colors.background;
         egui::CentralPanel::default()
             .frame(egui::Frame::default().fill(bg))
             .show(ctx, |ui| {
                 let metrics = self.prepare_edit_layout(ui, buffer_changed);
-                let scroll_out = self.render_editor_lines(ui, &metrics);
-                self.draw_editor_cursor(ui, &metrics, scroll_out);
+
+                // 文本 ScrollArea 从行号右侧开始
+                let text_area_max_x = metrics.avail_rect.left()
+                    + metrics.avail_rect.width();
+                let text_rect = Rect::from_min_max(
+                    pos2(
+                        metrics.avail_rect.left() + metrics.gutter_px,
+                        metrics.panel_top,
+                    ),
+                    pos2(text_area_max_x, metrics.panel_top + metrics.panel_h),
+                );
+                let mut text_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(text_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+
+                let scroll_out =
+                    self.render_text_scroll_area(&mut text_ui, &metrics);
+                let scroll_final_y = scroll_out.state.offset.y
+                    .clamp(0.0, metrics.max_scroll_y);
+                let scroll_final_x = scroll_out.state.offset.x
+                    .clamp(0.0, metrics.max_scroll_x);
+
+                // 存储最终滚动偏移
+                if (scroll_final_y - metrics.scroll_offset_y).abs() > 0.5 {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(metrics.scroll_id, scroll_final_y)
+                    });
+                }
+                if (scroll_final_x - metrics.scroll_offset_x).abs() > 0.5 {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(metrics.scroll_x_id, scroll_final_x)
+                    });
+                }
+
+                // 行号区（固定在左侧，Y 跟随纵向滚动）
+                self.render_gutter(ui, &metrics, scroll_final_y);
+
+                // 光标
+                self.draw_cursor(ui, &metrics, scroll_final_y, scroll_final_x);
             });
     }
 
@@ -1540,9 +1581,10 @@ impl EditorApp {
         }
         let max_line_gc = self.cached_max_line_gc;
         let max_text_width = max_line_gc as f32 * cw;
-        let content_w = (gutter_px + max_text_width).max(avail_rect.width());
         let max_scroll_y = (content_h - panel_h).max(0.0);
-        let max_scroll_x = (content_w - avail_rect.width()).max(0.0);
+        // 横向滚动范围基于文本宽度减去可视文本区域（面板宽减去行号宽）
+        let max_scroll_x =
+            (max_text_width - (avail_rect.width() - gutter_px)).max(0.0);
 
         // 读取滚动偏移
         let scroll_id = ui.make_persistent_id("edit_scroll");
@@ -1579,7 +1621,7 @@ impl EditorApp {
                     f32::INFINITY,
                 )
             });
-            gutter_px + gal.rect.width()
+            gal.rect.width()
         };
 
         // 纵向滚动同步：光标超出可见区域时调整
@@ -1599,15 +1641,16 @@ impl EditorApp {
                 .data_mut(|d| d.insert_temp(scroll_id, scroll_offset_y));
             ui.ctx().request_repaint();
         }
-        // 横向滚动同步
-        if avail_rect.width() > 0.0
+        // 横向滚动同步（可视文本区域宽度 = 面板宽度 - 行号宽度）
+        let visible_text_w = avail_rect.width() - gutter_px;
+        if visible_text_w > 0.0
             && (cursor_x_in_content < scroll_offset_x
-                || cursor_x_in_content > scroll_offset_x + avail_rect.width())
+                || cursor_x_in_content > scroll_offset_x + visible_text_w)
         {
             scroll_offset_x = if cursor_x_in_content < scroll_offset_x {
                 cursor_x_in_content
             } else {
-                (cursor_x_in_content - avail_rect.width() + cw).max(0.0)
+                (cursor_x_in_content - visible_text_w + cw).max(0.0)
             };
             scroll_offset_x = scroll_offset_x.clamp(0.0, max_scroll_x);
             ui.ctx()
@@ -1623,13 +1666,13 @@ impl EditorApp {
             avail_rect,
             panel_h,
             content_h,
-            content_w,
             max_scroll_y,
             max_scroll_x,
             panel_left,
             panel_top,
             cursor_x_in_content,
             total,
+            max_text_width,
             scroll_id,
             scroll_offset_y,
             scroll_x_id,
@@ -1637,8 +1680,8 @@ impl EditorApp {
         }
     }
 
-    /// 在 ScrollArea 内渲染所有行（行号 + 高亮内容）
-    fn render_editor_lines(
+    /// 在文本区域子 Ui 中创建 ScrollArea，渲染高亮文本行（不含行号）
+    fn render_text_scroll_area(
         &self,
         ui: &mut egui::Ui,
         metrics: &EditorMetrics,
@@ -1646,9 +1689,8 @@ impl EditorApp {
         let &EditorMetrics {
             ref font_id,
             row_h,
-            gutter_px,
+            max_text_width,
             content_h,
-            content_w,
             scroll_id,
             scroll_offset_y,
             scroll_offset_x,
@@ -1662,14 +1704,11 @@ impl EditorApp {
             .horizontal_scroll_offset(scroll_offset_x)
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                // content_ui.min_rect 原点 = viewport_origin - scroll_offset
+                // 将内容坐标转为屏幕坐标必须加上此偏移
+                let origin = ui.min_rect().min;
+                let content_w = (max_text_width.max(ui.available_width()) - 1.0).max(0.0);
                 ui.allocate_space(egui::vec2(content_w, content_h));
-                // gutter 背景
-                ui.painter().rect_filled(
-                    Rect::from_min_size(pos2(0.0, 0.0), vec2(gutter_px, content_h)),
-                    0.0,
-                    self.theme_colors.background,
-                );
-                // 渲染每一行
                 let sel = self.selection_range();
                 let file_type = self.buffer.get_file_info().get_file_type();
                 let search_q = if matches!(
@@ -1716,23 +1755,9 @@ impl EditorApp {
                 let sel_linewise = self.selection_linewise;
                 for li in 0..total {
                     self.buffer.highlight(li, &mut hl);
-                    let y = li as f32 * row_h;
-                    let is_cursor = li == self.text_location.line_idx;
-                    // 行号
-                    let ln_color = if is_cursor {
-                        self.theme_colors.line_number_active
-                    } else {
-                        self.theme_colors.line_number
-                    };
-                    let ln_text = format!("{:>w$} ", li + 1, w = GUTTER_CHARS - 1);
-                    ui.painter().text(
-                        pos2(0.0, y),
-                        egui::Align2::LEFT_TOP,
-                        &ln_text,
-                        font_id.clone(),
-                        ln_color,
-                    );
-                    // 内容
+                    // 内容 Y 坐标（内容坐标，屏幕坐标 = origin.y + y）
+                    let content_y = li as f32 * row_h;
+                    let screen_y = origin.y + content_y;
                     if let Some(annotated) =
                         self.buffer
                             .get_highlight_substring(li, 0..usize::MAX, &hl)
@@ -1765,7 +1790,8 @@ impl EditorApp {
                             (usize::MAX, 0)
                         };
                         let mut gi = 0usize;
-                        let mut px = gutter_px;
+                        // 文本内容从 0 开始（不含行号），屏幕坐标需加 origin.x
+                        let mut px = 0.0f32;
                         for part in &annotated {
                             let color = part
                                 .annotated_type
@@ -1781,7 +1807,7 @@ impl EditorApp {
                                 _ => None,
                             };
                             let part_str = part.string;
-                            // 整体 layout part 文本，与光标测量方式一致，消除累积偏差
+                            // 整体 layout part 文本，与光标测量方式一致
                             let part_gal = ui.fonts(|f| {
                                 f.layout(
                                     part_str.to_string(),
@@ -1792,7 +1818,7 @@ impl EditorApp {
                             });
                             if let Some(row) = part_gal.rows.first() {
                                 for glyph in &row.glyphs {
-                                    let gx = px + glyph.pos.x;
+                                    let gx = origin.x + px + glyph.pos.x;
                                     let bg = if sel.is_some() && gi >= gs && gi < ge {
                                         self.theme_colors.selection_bg
                                     } else if let Some(pbg) = part_bg {
@@ -1803,7 +1829,7 @@ impl EditorApp {
                                     if bg != self.theme_colors.background {
                                         ui.painter().rect_filled(
                                             Rect::from_min_size(
-                                                pos2(gx, y),
+                                                pos2(gx, screen_y),
                                                 vec2(glyph.advance_width, row_h),
                                             ),
                                             0.0,
@@ -1812,7 +1838,7 @@ impl EditorApp {
                                     }
                                     let g_text = glyph.chr.to_string();
                                     ui.painter().text(
-                                        pos2(gx, y),
+                                        pos2(gx, screen_y),
                                         egui::Align2::LEFT_TOP,
                                         &g_text,
                                         font_id.clone(),
@@ -1828,47 +1854,77 @@ impl EditorApp {
             })
     }
 
-    /// 读回滚动偏移、计算光标屏幕坐标并绘制光标
-    fn draw_editor_cursor(
+    /// 在父 Ui 上绘制行号区（X 固定在面板左侧，Y 跟随纵向滚动）
+    fn render_gutter(
+        &self,
+        ui: &egui::Ui,
+        metrics: &EditorMetrics,
+        scroll_y: f32,
+    ) {
+        let &EditorMetrics {
+            ref font_id,
+            row_h,
+            gutter_px,
+            content_h,
+            total,
+            panel_top,
+            ..
+        } = metrics;
+
+        let gutter_origin_y = panel_top - scroll_y;
+        // 行号背景
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                pos2(metrics.panel_left, gutter_origin_y),
+                vec2(gutter_px, content_h),
+            ),
+            0.0,
+            self.theme_colors.background,
+        );
+        for li in 0..total {
+            let screen_y = gutter_origin_y + li as f32 * row_h;
+            let is_cursor = li == self.text_location.line_idx;
+            let ln_color = if is_cursor {
+                self.theme_colors.line_number_active
+            } else {
+                self.theme_colors.line_number
+            };
+            let ln_text = format!("{:>w$} ", li + 1, w = GUTTER_CHARS - 1);
+            ui.painter().text(
+                pos2(metrics.panel_left, screen_y),
+                egui::Align2::LEFT_TOP,
+                &ln_text,
+                font_id.clone(),
+                ln_color,
+            );
+        }
+    }
+
+    /// 计算光标屏幕坐标并绘制光标
+    fn draw_cursor(
         &mut self,
         ui: &egui::Ui,
         metrics: &EditorMetrics,
-        scroll_out: ScrollAreaOutput<()>,
+        scroll_final_y: f32,
+        scroll_final_x: f32,
     ) {
         let &EditorMetrics {
             ref font_id,
             row_h,
             cw,
+            gutter_px,
             ref avail_rect,
             panel_h,
-            max_scroll_y,
-            max_scroll_x,
             panel_left,
             panel_top,
             cursor_x_in_content,
-            scroll_id,
-            scroll_offset_y,
-            scroll_x_id,
-            scroll_offset_x,
             ..
         } = metrics;
 
-        // 读回 ScrollArea 处理滚轮后的最终偏移量
-        let scroll_final_y = scroll_out.state.offset.y.clamp(0.0, max_scroll_y);
-        let scroll_final_x = scroll_out.state.offset.x.clamp(0.0, max_scroll_x);
-        if (scroll_final_y - scroll_offset_y).abs() > 0.5 {
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(scroll_id, scroll_final_y));
-        }
-        if (scroll_final_x - scroll_offset_x).abs() > 0.5 {
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(scroll_x_id, scroll_final_x));
-        }
-
-        // 计算光标屏幕坐标
+        // 光标屏幕坐标：面板原点 + 行号宽度 + 文本内容偏移 - 滚动偏移
         let cursor_y =
             panel_top + self.text_location.line_idx as f32 * row_h - scroll_final_y;
-        let cursor_x = panel_left + cursor_x_in_content - scroll_final_x;
+        let cursor_x = panel_left + gutter_px + cursor_x_in_content - scroll_final_x;
 
         // 光标闪烁逻辑
         let blink_interval = Duration::from_millis(self.config.cursor.blink_interval_ms);
@@ -2326,13 +2382,13 @@ mod tests {
             avail_rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0)),
             panel_h: 600.0,
             content_h: 1800.0,
-            content_w: 800.0,
             max_scroll_y: 1200.0,
             max_scroll_x: 0.0,
             panel_left: 0.0,
             panel_top: 0.0,
             cursor_x_in_content: 58.8,
             total: 100,
+            max_text_width: 800.0,
             scroll_id: egui::Id::new("test"),
             scroll_offset_y: 0.0,
             scroll_x_id: egui::Id::new("test_x"),
