@@ -69,6 +69,8 @@ pub struct EditorApp {
     theme_colors: ThemeColors,
     cursor_blink_visible: bool,
     cursor_last_toggle: Instant,
+    /// 缓存最大行 grapheme 数，避免每帧 O(n) 遍历
+    cached_max_line_gc: usize,
 }
 
 impl EditorApp {
@@ -106,6 +108,7 @@ impl EditorApp {
             theme_colors,
             cursor_blink_visible: true,
             cursor_last_toggle: Instant::now(),
+            cached_max_line_gc: 0,
         };
         if let Some(ref name) = filename {
             if let Ok(buf) = Buffer::load(name) {
@@ -1443,7 +1446,7 @@ impl eframe::App for EditorApp {
             ctx.set_fonts(fonts);
             self.style_initialized = true;
         }
-        self.process_key_events(ctx);
+        let buffer_changed = self.process_key_events(ctx);
 
         // 底部状态栏（最底部）
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -1495,35 +1498,100 @@ impl eframe::App for EditorApp {
                 let panel_left = avail_rect.left();
                 let panel_top = avail_rect.top();
 
+                // --- 计算内容宽度（用于横向滚动） ---
+                // 仅在 buffer 内容变更或首次计算时遍历全部行，避免每帧 O(n)
+                if buffer_changed || self.cached_max_line_gc == 0 {
+                    self.cached_max_line_gc = (0..total)
+                        .map(|li| self.buffer.grapheme_count(li))
+                        .max()
+                        .unwrap_or(0);
+                }
+                let max_line_gc = self.cached_max_line_gc;
+                let max_text_width = max_line_gc as f32 * cw;
+                let content_w = (gutter_px + max_text_width).max(avail_rect.width());
+                let max_scroll_y = (content_h - panel_h).max(0.0);
+                let max_scroll_x = (content_w - avail_rect.width()).max(0.0);
+
+                // --- 读取滚动偏移 ---
                 let scroll_id = ui.make_persistent_id("edit_scroll");
                 let mut scroll_offset_y: f32 = ui
                     .ctx()
                     .data_mut(|d| d.get_temp(scroll_id))
                     .unwrap_or(0.0);
+                let scroll_x_id = ui.make_persistent_id("edit_scroll_x");
+                let mut scroll_offset_x: f32 = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp(scroll_x_id))
+                    .unwrap_or(0.0);
 
-                // 滚动同步：光标超出可见区域时调整滚动偏移
-                let visible_h = panel_h;
+                // 夹紧滚动偏移到有效范围（内容高度/宽度变化后自动修正）
+                scroll_offset_y = scroll_offset_y.clamp(0.0, max_scroll_y);
+                scroll_offset_x = scroll_offset_x.clamp(0.0, max_scroll_x);
+
+                // --- 计算光标在内容坐标中的 X 位置（纵向/横向滚动同步共用） ---
+                let cursor_x_in_content = {
+                    let line_content = self
+                        .buffer
+                        .get_line_content(self.text_location.line_idx)
+                        .unwrap_or_default();
+                    let byte_idx = self.buffer.grapheme_to_byte(
+                        self.text_location.line_idx,
+                        self.text_location.grapheme_idx,
+                    );
+                    let text_before =
+                        &line_content[..byte_idx.min(line_content.len())];
+                    let gal = ui.fonts(|f| {
+                        f.layout(
+                            text_before.to_string(),
+                            font_id.clone(),
+                            Color32::WHITE,
+                            f32::INFINITY,
+                        )
+                    });
+                    gutter_px + gal.rect.width()
+                };
+
+                // --- 光标超出可见区域时调整滚动偏移 ---
+                // 纵向滚动同步
                 let c_top = self.text_location.line_idx as f32 * row_h;
                 let c_bot = c_top + row_h;
-                if visible_h > 0.0 && (c_top < scroll_offset_y || c_bot > scroll_offset_y + visible_h) {
+                if panel_h > 0.0
+                    && (c_top < scroll_offset_y || c_bot > scroll_offset_y + panel_h)
+                {
                     scroll_offset_y = if c_top < scroll_offset_y {
                         c_top
                     } else {
-                        (c_bot - visible_h).max(0.0)
+                        (c_bot - panel_h).max(0.0)
                     };
+                    scroll_offset_y = scroll_offset_y.clamp(0.0, max_scroll_y);
                     ui.ctx()
                         .data_mut(|d| d.insert_temp(scroll_id, scroll_offset_y));
                     ctx.request_repaint();
                 }
+                // 横向滚动同步
+                if avail_rect.width() > 0.0
+                    && (cursor_x_in_content < scroll_offset_x
+                        || cursor_x_in_content > scroll_offset_x + avail_rect.width())
+                {
+                    scroll_offset_x = if cursor_x_in_content < scroll_offset_x {
+                        cursor_x_in_content
+                    } else {
+                        (cursor_x_in_content - avail_rect.width() + cw).max(0.0)
+                    };
+                    scroll_offset_x = scroll_offset_x.clamp(0.0, max_scroll_x);
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(scroll_x_id, scroll_offset_x));
+                    ctx.request_repaint();
+                }
 
-                let scroll_out = egui::ScrollArea::vertical()
+                let scroll_out = egui::ScrollArea::both()
                     .id_salt(scroll_id)
                     .vertical_scroll_offset(scroll_offset_y)
+                    .horizontal_scroll_offset(scroll_offset_x)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        // 分配完整内容空间
-                        let avail_w = ui.available_width();
-                        ui.allocate_space(egui::vec2(avail_w, content_h));
+                        // 分配完整内容空间（宽度包含行号区域 + 最大行宽）
+                        ui.allocate_space(egui::vec2(content_w, content_h));
                         // gutter 背景
                         ui.painter().rect_filled(
                             Rect::from_min_size(pos2(0.0, 0.0), vec2(gutter_px, content_h)),
@@ -1683,36 +1751,22 @@ impl eframe::App for EditorApp {
                         }
                     });
 
-                // 读回 ScrollArea 处理滚轮后的最终偏移量
-                let scroll_final = scroll_out.state.offset.y;
-                if (scroll_final - scroll_offset_y).abs() > 0.5 {
+                // 读回 ScrollArea 处理滚轮后的最终偏移量（纵向+横向）
+                let scroll_final_y = scroll_out.state.offset.y.clamp(0.0, max_scroll_y);
+                let scroll_final_x = scroll_out.state.offset.x.clamp(0.0, max_scroll_x);
+                if (scroll_final_y - scroll_offset_y).abs() > 0.5 {
                     ui.ctx()
-                        .data_mut(|d| d.insert_temp(scroll_id, scroll_final));
+                        .data_mut(|d| d.insert_temp(scroll_id, scroll_final_y));
+                }
+                if (scroll_final_x - scroll_offset_x).abs() > 0.5 {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(scroll_x_id, scroll_final_x));
                 }
 
-                let cursor_y = panel_top + self.text_location.line_idx as f32 * row_h - scroll_final;
-                // 计算光标 X 坐标：基于实际字符宽度（CJK 字符宽度约为 ASCII 两倍）
-                let cursor_x = {
-                    let line_content = self
-                        .buffer
-                        .get_line_content(self.text_location.line_idx)
-                        .unwrap_or_default();
-                    let byte_idx = self.buffer.grapheme_to_byte(
-                        self.text_location.line_idx,
-                        self.text_location.grapheme_idx,
-                    );
-                    let text_before =
-                        &line_content[..byte_idx.min(line_content.len())];
-                    let gal = ui.fonts(|f| {
-                        f.layout(
-                            text_before.to_string(),
-                            font_id.clone(),
-                            Color32::WHITE,
-                            f32::INFINITY,
-                        )
-                    });
-                    panel_left + gutter_px + gal.rect.width()
-                };
+                // 计算光标屏幕坐标（从内容坐标减去滚动偏移转换到面板坐标）
+                let cursor_y =
+                    panel_top + self.text_location.line_idx as f32 * row_h - scroll_final_y;
+                let cursor_x = panel_left + cursor_x_in_content - scroll_final_x;
                 // 光标闪烁逻辑
                 let blink_interval =
                     Duration::from_millis(self.config.cursor.blink_interval_ms);
@@ -1736,6 +1790,8 @@ impl eframe::App for EditorApp {
                     && self.cursor_blink_visible
                     && cursor_y >= panel_top - row_h
                     && cursor_y < panel_top + panel_h + row_h
+                    && cursor_x >= panel_left
+                    && cursor_x < panel_left + avail_rect.width()
                 {
                     match self.mode {
                         Mode::Insert => {
