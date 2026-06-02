@@ -585,11 +585,11 @@ impl ComputeModeAction for Mode {
                 },
                 Key::Char('v') => ModeAction {
                     mode: Mode::Visual,
-                    command_list: Some(vec![CommandType::System(CommandSystem::Dismiss)]),
+                    command_list: None,
                 },
                 Key::Shift('V') => ModeAction {
                     mode: Mode::VisualLine,
-                    command_list: Some(vec![CommandType::System(CommandSystem::Dismiss)]),
+                    command_list: None,
                 },
                 Key::Shift(':') => ModeAction {
                     mode: Mode::Command,
