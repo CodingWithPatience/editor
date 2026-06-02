@@ -1710,42 +1710,47 @@ impl eframe::App for EditorApp {
                                         _ => None,
                                     };
                                     let part_str = part.string;
-                                    // 逐 grapheme 渲染以确保精度
-                                    for g in part_str.graphemes(true) {
-                                        let g_text = g.to_string();
-                                        let g_gal = ui.fonts(|f| {
-                                            f.layout(
-                                                g_text.clone(),
-                                                font_id.clone(),
-                                                Color32::WHITE,
-                                                f32::INFINITY,
-                                            )
-                                        });
-                                        let gw = g_gal.rect.width();
-                                        let bg = if sel.is_some() && gi >= gs && gi < ge {
-                                            self.theme_colors.selection_bg
-                                        } else if let Some(pbg) = part_bg {
-                                            pbg
-                                        } else {
-                                            self.theme_colors.background
-                                        };
-                                        if bg != self.theme_colors.background {
-                                            ui.painter().rect_filled(
-                                                Rect::from_min_size(pos2(px, y), vec2(gw, row_h)),
-                                                0.0,
-                                                bg,
-                                            );
-                                        }
-                                        ui.painter().text(
-                                            pos2(px, y),
-                                            egui::Align2::LEFT_TOP,
-                                            &g_text,
+                                    // 整体 layout part 文本，与光标测量方式一致，消除累积偏差
+                                    let part_gal = ui.fonts(|f| {
+                                        f.layout(
+                                            part_str.to_string(),
                                             font_id.clone(),
-                                            color,
-                                        );
-                                        gi += 1;
-                                        px += gw;
+                                            Color32::WHITE,
+                                            f32::INFINITY,
+                                        )
+                                    });
+                                    if let Some(row) = part_gal.rows.first() {
+                                        for glyph in &row.glyphs {
+                                            let gx = px + glyph.pos.x;
+                                            let bg = if sel.is_some() && gi >= gs && gi < ge {
+                                                self.theme_colors.selection_bg
+                                            } else if let Some(pbg) = part_bg {
+                                                pbg
+                                            } else {
+                                                self.theme_colors.background
+                                            };
+                                            if bg != self.theme_colors.background {
+                                                ui.painter().rect_filled(
+                                                    Rect::from_min_size(
+                                                        pos2(gx, y),
+                                                        vec2(glyph.advance_width, row_h),
+                                                    ),
+                                                    0.0,
+                                                    bg,
+                                                );
+                                            }
+                                            let g_text = glyph.chr.to_string();
+                                            ui.painter().text(
+                                                pos2(gx, y),
+                                                egui::Align2::LEFT_TOP,
+                                                &g_text,
+                                                font_id.clone(),
+                                                color,
+                                            );
+                                            gi += 1;
+                                        }
                                     }
+                                    px += part_gal.rect.width();
                                 }
                             }
                         }
