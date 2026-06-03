@@ -1893,14 +1893,25 @@ impl EditorApp {
                         if let Some(row) = part_gal.rows.first() {
                             for glyph in &row.glyphs {
                                 let gx = origin.x + px + glyph.pos.x;
-                                let bg = if sel.is_some() && gi >= gs && gi < ge {
+                                // Normal/NormalPending 模式下光标所在字符颜色反转
+                                let is_cursor_glyph = li == self.text_location.line_idx
+                                    && gi == self.text_location.grapheme_idx
+                                    && matches!(
+                                        self.mode,
+                                        Mode::Normal | Mode::NormalPending(_)
+                                    )
+                                    && self.cursor_blink_visible
+                                    && self.prompt_type == PromptType::None;
+                                let bg = if is_cursor_glyph {
+                                    self.theme_colors.cursor
+                                } else if sel.is_some() && gi >= gs && gi < ge {
                                     self.theme_colors.selection_bg
                                 } else if let Some(pbg) = part_bg {
                                     pbg
                                 } else {
                                     self.theme_colors.background
                                 };
-                                if bg != self.theme_colors.background {
+                                if bg != self.theme_colors.background || is_cursor_glyph {
                                     ui.painter().rect_filled(
                                         Rect::from_min_size(
                                             pos2(gx, screen_y),
@@ -1910,13 +1921,19 @@ impl EditorApp {
                                         bg,
                                     );
                                 }
+                                // 光标所在字符文本颜色反转为背景色
+                                let text_color = if is_cursor_glyph {
+                                    self.theme_colors.background
+                                } else {
+                                    color
+                                };
                                 let g_text = glyph.chr.to_string();
                                 ui.painter().text(
                                     pos2(gx, screen_y),
                                     egui::Align2::LEFT_TOP,
                                     &g_text,
                                     font_id.clone(),
-                                    color,
+                                    text_color,
                                 );
                                 gi += 1;
                             }
@@ -2035,6 +2052,39 @@ impl EditorApp {
                         0.0,
                         self.theme_colors.cursor,
                     );
+                }
+                Mode::Normal | Mode::NormalPending(_) => {
+                    // 光标在有效字符上时，颜色反转已在 render_text_scroll_area 中处理
+                    let on_character = self
+                        .buffer
+                        .get_line_content(self.text_location.line_idx)
+                        .map(|lc| {
+                            let gc =
+                                self.buffer.grapheme_count(self.text_location.line_idx);
+                            gc > 0
+                                && self.text_location.grapheme_idx < gc
+                                && {
+                                    // 确认该 grapheme 有实际内容
+                                    let start = self.buffer.grapheme_to_byte(
+                                        self.text_location.line_idx,
+                                        self.text_location.grapheme_idx,
+                                    );
+                                    let end = self.buffer.grapheme_to_byte(
+                                        self.text_location.line_idx,
+                                        (self.text_location.grapheme_idx + 1).min(gc),
+                                    );
+                                    start < end.min(lc.len())
+                                }
+                        })
+                        .unwrap_or(false);
+                    if !on_character {
+                        // 光标在行末或空行时，绘制块光标
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(pos2(cursor_x, cursor_y), vec2(cw, row_h)),
+                            0.0,
+                            self.theme_colors.cursor,
+                        );
+                    }
                 }
                 _ => {
                     let cursor_ch_w = self
