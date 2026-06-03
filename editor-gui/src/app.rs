@@ -201,6 +201,7 @@ impl EditorApp {
     // ---- 键盘 ----
     fn process_key_events(&mut self, ctx: &egui::Context) -> bool {
         let mut dirty = false;
+        let cursor_before = self.text_location;
         let events: Vec<egui::Event> = ctx.input(|i| i.events.clone());
 
         // 检测当前帧是否存在 IME 活动（非空 Preedit 或 Commit），
@@ -309,6 +310,10 @@ impl EditorApp {
                 }
                 _ => {}
             }
+        }
+        // 光标位置变化也视为"内容变更"，确保 Normal 模式移动触发滚动同步
+        if self.text_location != cursor_before {
+            dirty = true;
         }
         if dirty {
             ctx.request_repaint();
@@ -1572,8 +1577,11 @@ impl EditorApp {
         let panel_left = avail_rect.left();
         let panel_top = avail_rect.top();
 
+        // 首帧标记（在缓存更新前记录，用于初始滚动定位）
+        let is_first_frame = self.cached_max_line_gc == 0;
+
         // 计算内容宽度（用于横向滚动），缓存避免每帧 O(n)
-        if buffer_changed || self.cached_max_line_gc == 0 {
+        if buffer_changed || is_first_frame {
             self.cached_max_line_gc = (0..total)
                 .map(|li| self.buffer.grapheme_count(li))
                 .max()
@@ -1624,17 +1632,21 @@ impl EditorApp {
             gal.rect.width()
         };
 
-        // 纵向滚动同步：光标超出可见区域时调整
-        // 此处写入 data_temp 是预存值——若本帧无滚轮事件，draw_editor_cursor
-        // 中的 scroll_final_y 将与之相同，最终持久化到下一帧；若有滚轮事件，
-        // draw_editor_cursor 会用实际值覆盖
+        // 纵向滚动同步：仅在键盘输入（光标可能移动）时将视图调整到光标位置
+        // 鼠标滚轮滚动时不干预，允许光标离开可视区域
+        // scrolloff 边距：光标距可视区边界 N 行内时提前触发滚动，光标保持在距边界 N 行处
+        let scroll_margin = (self.config.scrolloff as f32) * row_h;
         let c_top = self.text_location.line_idx as f32 * row_h;
         let c_bot = c_top + row_h;
-        if panel_h > 0.0 && (c_top < scroll_offset_y || c_bot > scroll_offset_y + panel_h) {
-            scroll_offset_y = if c_top < scroll_offset_y {
-                c_top
+        if (buffer_changed || is_first_frame)
+            && panel_h > 0.0
+            && (c_top < scroll_offset_y + scroll_margin
+                || c_bot > scroll_offset_y + panel_h - scroll_margin)
+        {
+            scroll_offset_y = if c_top < scroll_offset_y + scroll_margin {
+                (c_top - scroll_margin).max(0.0)
             } else {
-                (c_bot - panel_h).max(0.0)
+                (c_bot - panel_h + scroll_margin).max(0.0)
             };
             scroll_offset_y = scroll_offset_y.clamp(0.0, max_scroll_y);
             ui.ctx()
@@ -1643,14 +1655,17 @@ impl EditorApp {
         }
         // 横向滚动同步（可视文本区域宽度 = 面板宽度 - 行号宽度）
         let visible_text_w = avail_rect.width() - gutter_px;
-        if visible_text_w > 0.0
-            && (cursor_x_in_content < scroll_offset_x
-                || cursor_x_in_content > scroll_offset_x + visible_text_w)
+        let scroll_margin_x = self.config.scrolloff as f32 * cw;
+        if (buffer_changed || is_first_frame)
+            && visible_text_w > 0.0
+            && (cursor_x_in_content < scroll_offset_x + scroll_margin_x
+                || cursor_x_in_content + cw
+                    > scroll_offset_x + visible_text_w - scroll_margin_x)
         {
-            scroll_offset_x = if cursor_x_in_content < scroll_offset_x {
-                cursor_x_in_content
+            scroll_offset_x = if cursor_x_in_content < scroll_offset_x + scroll_margin_x {
+                (cursor_x_in_content - scroll_margin_x).max(0.0)
             } else {
-                (cursor_x_in_content - visible_text_w + cw).max(0.0)
+                (cursor_x_in_content + cw - visible_text_w + scroll_margin_x).max(0.0)
             };
             scroll_offset_x = scroll_offset_x.clamp(0.0, max_scroll_x);
             ui.ctx()

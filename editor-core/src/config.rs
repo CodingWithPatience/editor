@@ -15,6 +15,13 @@ pub struct EditorConfig {
     pub cursor: CursorConfig,
     #[serde(default)]
     pub theme: ThemeConfig,
+    /// 滚动边距（行数）：光标距可视区域边界小于此值时触发滚动，默认 5
+    #[serde(default = "default_scrolloff")]
+    pub scrolloff: usize,
+}
+
+fn default_scrolloff() -> usize {
+    5
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +75,7 @@ impl Default for EditorConfig {
             font: FontConfig::default(),
             cursor: CursorConfig::default(),
             theme: ThemeConfig::default(),
+            scrolloff: default_scrolloff(),
         }
     }
 }
