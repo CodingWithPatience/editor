@@ -103,6 +103,10 @@ pub struct EditorApp {
     needs_highlight: bool,
     /// 缓存的高亮注释：按行索引存储，内容/搜索变化时才重建
     cached_annotations: Vec<Vec<editor_core::annotation::Annotation>>,
+    /// 鼠标左键拖拽选择中
+    mouse_drag_active: bool,
+    /// 鼠标拖拽选择起始位置（snap 之后，用于释放时比较是否为单击）
+    mouse_drag_start: Option<Location>,
 }
 
 impl EditorApp {
@@ -143,6 +147,8 @@ impl EditorApp {
             cached_max_line_gc: 0,
             needs_highlight: true,
             cached_annotations: Vec::new(),
+            mouse_drag_active: false,
+            mouse_drag_start: None,
         };
         if let Some(ref name) = filename {
             if let Ok(buf) = Buffer::load(name) {
@@ -348,6 +354,13 @@ impl EditorApp {
             self.count_prefix = None;
             self.visual_pending_g = false;
             self.visual_pending_find = None;
+            // 取消进行中的鼠标拖拽选择
+            if self.mouse_drag_active {
+                self.mouse_drag_active = false;
+                self.mouse_drag_start = None;
+                self.selection_anchor = None;
+                return true;
+            }
             if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
                 self.selection_anchor = None;
                 self.mode = Mode::Normal;
@@ -989,6 +1002,117 @@ impl EditorApp {
     }
 
     // ---- 光标/滚动/粘贴/撤销 ----
+    /// 将屏幕坐标转换为文本 Location
+    fn screen_to_location(
+        &self,
+        screen_pos: egui::Pos2,
+        metrics: &EditorMetrics,
+        scroll_offset_y: f32,
+        scroll_offset_x: f32,
+    ) -> Location {
+        let text_left = metrics.panel_left + metrics.gutter_px;
+        let cy = (screen_pos.y - metrics.panel_top + scroll_offset_y).max(0.0);
+        let cx = (screen_pos.x - text_left + scroll_offset_x).max(0.0);
+        // 坐标非负，floor 后远小于 usize::MAX，as 转换安全
+        let li = ((cy / metrics.row_h).floor() as usize).min(metrics.total - 1);
+        let gc = self.buffer.grapheme_count(li);
+        // 坐标非负，除以 cw 后远小于 usize::MAX，as 转换安全
+        let gi = ((cx / metrics.cw).floor() as usize).min(gc);
+        Location {
+            line_idx: li,
+            grapheme_idx: gi,
+        }
+    }
+
+    /// 检查屏幕坐标是否在文本内容区域内
+    fn in_text_area(&self, p: egui::Pos2, metrics: &EditorMetrics) -> bool {
+        let text_left = metrics.panel_left + metrics.gutter_px;
+        p.x >= text_left
+            && p.x <= metrics.avail_rect.right()
+            && p.y >= metrics.panel_top
+            && p.y <= metrics.panel_top + metrics.panel_h
+    }
+
+    /// 处理鼠标事件：左键拖拽选择文本（松开后进入 Visual 模式），
+    /// 左键单击移动光标，右键单击移动光标
+    fn handle_mouse_click(
+        &mut self,
+        ctx: &egui::Context,
+        metrics: &EditorMetrics,
+        scroll_offset_y: f32,
+        scroll_offset_x: f32,
+    ) {
+        // 提示栏激活时不处理鼠标点击（搜索/命令模式）
+        if self.prompt_type != PromptType::None {
+            return;
+        }
+
+        let (pos, left_down, right_click) = ctx.input(|i| {
+            (
+                i.pointer.interact_pos(),
+                i.pointer.button_down(egui::PointerButton::Primary),
+                i.pointer.button_clicked(egui::PointerButton::Secondary),
+            )
+        });
+
+        // 左键拖拽 / 单击处理
+        if left_down {
+            let Some(pos) = pos else {
+                return;
+            };
+            if !self.in_text_area(pos, metrics) {
+                return;
+            }
+            let loc = self.screen_to_location(pos, metrics, scroll_offset_y, scroll_offset_x);
+            if !self.mouse_drag_active {
+                // 拖拽开始：设置选区锚点
+                self.mouse_drag_active = true;
+                self.selection_anchor = Some(loc);
+                self.selection_linewise = false;
+            }
+            // 更新光标位置以扩展选区
+            self.text_location = loc;
+            self.snap_cursor();
+            // snap 之后记录起始位置，确保释放时与 text_location 比较一致
+            if self.mouse_drag_start.is_none() {
+                self.mouse_drag_start = Some(self.text_location);
+            }
+            ctx.request_repaint();
+        } else if self.mouse_drag_active {
+            // 左键松开，拖拽结束
+            self.mouse_drag_active = false;
+            let had_movement = self.mouse_drag_start != Some(self.text_location);
+            self.mouse_drag_start = None;
+            if had_movement {
+                // 有移动 = 拖拽选择，进入 Visual 模式
+                self.mode = Mode::Visual;
+            } else {
+                // 无移动 = 单击，清除选区；Visual 模式下退出到 Normal
+                self.selection_anchor = None;
+                if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
+                    self.mode = Mode::Normal;
+                }
+            }
+        }
+
+        // 右键单击（仅在未拖拽时）
+        if right_click && !self.mouse_drag_active {
+            if let Some(pos) = pos {
+                if self.in_text_area(pos, metrics) {
+                    let loc =
+                        self.screen_to_location(pos, metrics, scroll_offset_y, scroll_offset_x);
+                    self.text_location = loc;
+                    self.snap_cursor();
+                    // Visual 模式下右键单击退出到 Normal
+                    if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
+                        self.selection_anchor = None;
+                        self.mode = Mode::Normal;
+                    }
+                }
+            }
+        }
+    }
+
     fn snap_cursor(&mut self) {
         let h = self.buffer.height();
         if h == 0 {
@@ -1630,6 +1754,9 @@ impl EditorApp {
 
                 // 光标
                 self.draw_cursor(ui, &metrics, scroll_final_y, scroll_final_x);
+
+                // 鼠标点击定位光标
+                self.handle_mouse_click(ctx, &metrics, scroll_final_y, scroll_final_x);
             });
     }
 
