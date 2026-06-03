@@ -1,5 +1,6 @@
 use crate::gui_renderer::{annotation_to_color, ThemeColors, GUTTER_CHARS};
 use crate::keymap::egui_to_key;
+use editor_core::annotated_string::AnnotatedString;
 use editor_core::annotation_type::AnnotationType;
 use editor_core::buffer::Buffer;
 use editor_core::command::edit::Edit;
@@ -98,6 +99,10 @@ pub struct EditorApp {
     cursor_last_toggle: Instant,
     /// 缓存最大行 grapheme 数，避免每帧 O(n) 遍历
     cached_max_line_gc: usize,
+    /// 是否需要重新高亮（内容变更/搜索变更时置 true）
+    needs_highlight: bool,
+    /// 缓存的高亮注释：按行索引存储，内容/搜索变化时才重建
+    cached_annotations: Vec<Vec<editor_core::annotation::Annotation>>,
 }
 
 impl EditorApp {
@@ -136,6 +141,8 @@ impl EditorApp {
             cursor_blink_visible: true,
             cursor_last_toggle: Instant::now(),
             cached_max_line_gc: 0,
+            needs_highlight: true,
+            cached_annotations: Vec::new(),
         };
         if let Some(ref name) = filename {
             if let Ok(buf) = Buffer::load(name) {
@@ -242,6 +249,7 @@ impl EditorApp {
                                     self.buffer.insert_char(ch, self.text_location);
                                     self.text_location.grapheme_idx += 1;
                                 }
+                                self.needs_highlight = true;
                                 dirty = true;
                             } else if matches!(
                                 self.prompt_type,
@@ -471,9 +479,21 @@ impl EditorApp {
 
     fn process_command(&mut self, c: editor_core::command::Command) -> bool {
         match c {
-            editor_core::command::Command::Edit(e) => self.handle_edit(e),
+            editor_core::command::Command::Edit(e) => {
+                let result = self.handle_edit(e);
+                if result {
+                    self.needs_highlight = true;
+                }
+                result
+            }
             editor_core::command::Command::Move(m) => self.handle_move(m),
-            editor_core::command::Command::System(s) => self.handle_system(s),
+            editor_core::command::Command::System(s) => {
+                let result = self.handle_system(s);
+                if result {
+                    self.needs_highlight = true;
+                }
+                result
+            }
         }
     }
 
@@ -1315,6 +1335,7 @@ impl EditorApp {
                     Some(self.input_text.clone())
                 };
                 self.search_prev_location = None;
+                self.needs_highlight = true;
             }
             PromptType::CommandMode => {
                 self.execute_command_input();
@@ -1509,6 +1530,65 @@ impl EditorApp {
             .frame(egui::Frame::default().fill(bg))
             .show(ctx, |ui| {
                 let metrics = self.prepare_edit_layout(ui, buffer_changed);
+
+                // 高亮注释缓存：仅内容编辑/搜索变化时重建，避免每帧全量重新高亮
+                let file_type = self.buffer.get_file_info().get_file_type();
+                let search_q = if matches!(
+                    self.prompt_type,
+                    PromptType::Search | PromptType::SearchBackward
+                ) {
+                    if self.input_text.is_empty() {
+                        None
+                    } else {
+                        Some(self.input_text.as_str())
+                    }
+                } else {
+                    self.search_query.as_deref()
+                };
+                let selected_match = search_q.and_then(|q| {
+                    if q.is_empty() {
+                        return None;
+                    }
+                    let loc = self.text_location;
+                    let q_len = q.graphemes(true).count();
+                    let mut candidate = loc;
+                    for _ in 0..q_len {
+                        if let Some(found) = self.buffer.search_forward(q, candidate) {
+                            if found == candidate
+                                && found.line_idx == loc.line_idx
+                                && loc.grapheme_idx >= found.grapheme_idx
+                                && loc.grapheme_idx
+                                    < found.grapheme_idx.saturating_add(q_len)
+                            {
+                                return Some(found);
+                            }
+                        }
+                        if candidate.grapheme_idx == 0 {
+                            break;
+                        }
+                        candidate = Location {
+                            line_idx: candidate.line_idx,
+                            grapheme_idx: candidate.grapheme_idx.saturating_sub(1),
+                        };
+                    }
+                    None
+                });
+                if self.needs_highlight
+                    || self.cached_annotations.len() != metrics.total
+                {
+                    let mut hl =
+                        Highlighter::new(search_q, selected_match, file_type);
+                    for li in 0..metrics.total {
+                        self.buffer.highlight(li, &mut hl);
+                    }
+                    // 将高亮注释从 Highlighter 复制到持久缓存
+                    self.cached_annotations.clear();
+                    for li in 0..metrics.total {
+                        self.cached_annotations
+                            .push(hl.get_annotations(li));
+                    }
+                    self.needs_highlight = false;
+                }
 
                 // 文本 ScrollArea 从行号右侧开始
                 let text_area_max_x = metrics.avail_rect.left()
@@ -1722,148 +1802,126 @@ impl EditorApp {
                 // content_ui.min_rect 原点 = viewport_origin - scroll_offset
                 // 将内容坐标转为屏幕坐标必须加上此偏移
                 let origin = ui.min_rect().min;
+                // content_w 减 1px 防止与视口等宽时因浮点/布局误差触发横向滚动条
                 let content_w = (max_text_width.max(ui.available_width()) - 1.0).max(0.0);
                 ui.allocate_space(egui::vec2(content_w, content_h));
                 let sel = self.selection_range();
-                let file_type = self.buffer.get_file_info().get_file_type();
-                let search_q = if matches!(
-                    self.prompt_type,
-                    PromptType::Search | PromptType::SearchBackward
-                ) {
-                    if self.input_text.is_empty() {
-                        None
-                    } else {
-                        Some(self.input_text.as_str())
-                    }
-                } else {
-                    self.search_query.as_deref()
-                };
-                let selected_match = search_q.and_then(|q| {
-                    if q.is_empty() {
-                        return None;
-                    }
-                    let loc = self.text_location;
-                    let q_len = q.graphemes(true).count();
-                    let mut candidate = loc;
-                    for _ in 0..q_len {
-                        if let Some(found) = self.buffer.search_forward(q, candidate) {
-                            if found == candidate
-                                && found.line_idx == loc.line_idx
-                                && loc.grapheme_idx >= found.grapheme_idx
-                                && loc.grapheme_idx
-                                    < found.grapheme_idx.saturating_add(q_len)
-                            {
-                                return Some(found);
-                            }
-                        }
-                        if candidate.grapheme_idx == 0 {
-                            break;
-                        }
-                        candidate = Location {
-                            line_idx: candidate.line_idx,
-                            grapheme_idx: candidate.grapheme_idx.saturating_sub(1),
-                        };
-                    }
-                    None
-                });
-                let mut hl = Highlighter::new(search_q, selected_match, file_type);
                 let sel_linewise = self.selection_linewise;
-                for li in 0..total {
-                    self.buffer.highlight(li, &mut hl);
+                // 视口裁剪：仅渲染可见行 + 上下缓冲
+                // 高亮结果已由 render_edit_area 缓存，直接使用 hl 读取
+                // 缓冲 20 行确保快速滚动时不会出现白屏
+                let viewport_h = ui.clip_rect().height();
+                let visible_scroll_y = (-origin.y).max(0.0);
+                let render_start =
+                    ((visible_scroll_y / row_h).floor() as usize).saturating_sub(20);
+                let render_end = (((visible_scroll_y + viewport_h) / row_h).ceil() as usize + 20)
+                    .min(total);
+                for li in render_start..render_end {
                     // 内容 Y 坐标（内容坐标，屏幕坐标 = origin.y + y）
                     let content_y = li as f32 * row_h;
                     let screen_y = origin.y + content_y;
-                    if let Some(annotated) =
-                        self.buffer
-                            .get_highlight_substring(li, 0..usize::MAX, &hl)
+                    // 从缓存注释构建 AnnotatedString（避免每帧调用 highlight 遍历全文件）
+                    let line_content =
+                        self.buffer.get_line_content(li).unwrap_or_default();
+                    let mut annotated =
+                        AnnotatedString::from(&line_content);
+                    if let Some(anns) =
+                        self.cached_annotations.get(li)
                     {
-                        let (gs, ge) = if let Some((sl, sg, el, eg)) = sel {
-                            if sel_linewise {
-                                if li >= sl && li <= el {
-                                    (0, usize::MAX)
-                                } else {
-                                    (usize::MAX, 0)
-                                }
+                        for ann in anns.iter() {
+                            annotated.add_annotation(
+                                ann.annotation_type,
+                                ann.start,
+                                ann.end,
+                            );
+                        }
+                    }
+                    let (gs, ge) = if let Some((sl, sg, el, eg)) = sel {
+                        if sel_linewise {
+                            if li >= sl && li <= el {
+                                (0, usize::MAX)
                             } else {
-                                let s = if li == sl {
-                                    sg
-                                } else if li > sl {
-                                    0
-                                } else {
-                                    usize::MAX
-                                };
-                                let e = if li == el {
-                                    eg
-                                } else if li >= sl && li < el {
-                                    usize::MAX
-                                } else {
-                                    0
-                                };
-                                (s, e)
+                                (usize::MAX, 0)
                             }
                         } else {
-                            (usize::MAX, 0)
-                        };
-                        let mut gi = 0usize;
-                        // 文本内容从 0 开始（不含行号），屏幕坐标需加 origin.x
-                        let mut px = 0.0f32;
-                        for part in &annotated {
-                            let color = part
-                                .annotated_type
-                                .map(|at| annotation_to_color(at, &self.theme_colors))
-                                .unwrap_or(self.theme_colors.text);
-                            let part_bg = match part.annotated_type {
-                                Some(AnnotationType::Match) => {
-                                    Some(self.theme_colors.search_match_bg)
-                                }
-                                Some(AnnotationType::SelectedMatch) => {
-                                    Some(self.theme_colors.search_selected_bg)
-                                }
-                                _ => None,
+                            let s = if li == sl {
+                                sg
+                            } else if li > sl {
+                                0
+                            } else {
+                                usize::MAX
                             };
-                            let part_str = part.string;
-                            // 整体 layout part 文本，与光标测量方式一致
-                            let part_gal = ui.fonts(|f| {
-                                f.layout(
-                                    part_str.to_string(),
-                                    font_id.clone(),
-                                    Color32::WHITE,
-                                    f32::INFINITY,
-                                )
-                            });
-                            if let Some(row) = part_gal.rows.first() {
-                                for glyph in &row.glyphs {
-                                    let gx = origin.x + px + glyph.pos.x;
-                                    let bg = if sel.is_some() && gi >= gs && gi < ge {
-                                        self.theme_colors.selection_bg
-                                    } else if let Some(pbg) = part_bg {
-                                        pbg
-                                    } else {
-                                        self.theme_colors.background
-                                    };
-                                    if bg != self.theme_colors.background {
-                                        ui.painter().rect_filled(
-                                            Rect::from_min_size(
-                                                pos2(gx, screen_y),
-                                                vec2(glyph.advance_width, row_h),
-                                            ),
-                                            0.0,
-                                            bg,
-                                        );
-                                    }
-                                    let g_text = glyph.chr.to_string();
-                                    ui.painter().text(
-                                        pos2(gx, screen_y),
-                                        egui::Align2::LEFT_TOP,
-                                        &g_text,
-                                        font_id.clone(),
-                                        color,
-                                    );
-                                    gi += 1;
-                                }
-                            }
-                            px += part_gal.rect.width();
+                            let e = if li == el {
+                                eg
+                            } else if li >= sl && li < el {
+                                usize::MAX
+                            } else {
+                                0
+                            };
+                            (s, e)
                         }
+                    } else {
+                        (usize::MAX, 0)
+                    };
+                    let mut gi = 0usize;
+                    // 文本内容从 0 开始（不含行号），屏幕坐标需加 origin.x
+                    let mut px = 0.0f32;
+                    for part in &annotated {
+                        let color = part
+                            .annotated_type
+                            .map(|at| annotation_to_color(at, &self.theme_colors))
+                            .unwrap_or(self.theme_colors.text);
+                        let part_bg = match part.annotated_type {
+                            Some(AnnotationType::Match) => {
+                                Some(self.theme_colors.search_match_bg)
+                            }
+                            Some(AnnotationType::SelectedMatch) => {
+                                Some(self.theme_colors.search_selected_bg)
+                            }
+                            _ => None,
+                        };
+                        let part_str = part.string;
+                        // 整体 layout part 文本，与光标测量方式一致
+                        let part_gal = ui.fonts(|f| {
+                            f.layout(
+                                part_str.to_string(),
+                                font_id.clone(),
+                                Color32::WHITE,
+                                f32::INFINITY,
+                            )
+                        });
+                        if let Some(row) = part_gal.rows.first() {
+                            for glyph in &row.glyphs {
+                                let gx = origin.x + px + glyph.pos.x;
+                                let bg = if sel.is_some() && gi >= gs && gi < ge {
+                                    self.theme_colors.selection_bg
+                                } else if let Some(pbg) = part_bg {
+                                    pbg
+                                } else {
+                                    self.theme_colors.background
+                                };
+                                if bg != self.theme_colors.background {
+                                    ui.painter().rect_filled(
+                                        Rect::from_min_size(
+                                            pos2(gx, screen_y),
+                                            vec2(glyph.advance_width, row_h),
+                                        ),
+                                        0.0,
+                                        bg,
+                                    );
+                                }
+                                let g_text = glyph.chr.to_string();
+                                ui.painter().text(
+                                    pos2(gx, screen_y),
+                                    egui::Align2::LEFT_TOP,
+                                    &g_text,
+                                    font_id.clone(),
+                                    color,
+                                );
+                                gi += 1;
+                            }
+                        }
+                        px += part_gal.rect.width();
                     }
                 }
             })
@@ -1887,7 +1945,7 @@ impl EditorApp {
         } = metrics;
 
         let gutter_origin_y = panel_top - scroll_y;
-        // 行号背景
+        // 行号背景（始终填充全内容高度，保证滚动时视觉连续）
         ui.painter().rect_filled(
             Rect::from_min_size(
                 pos2(metrics.panel_left, gutter_origin_y),
@@ -1896,7 +1954,12 @@ impl EditorApp {
             0.0,
             self.theme_colors.background,
         );
-        for li in 0..total {
+        // 视口裁剪：仅渲染可见行号
+        let render_start =
+            ((scroll_y / row_h).floor() as usize).saturating_sub(20);
+        let render_end =
+            (((scroll_y + metrics.panel_h) / row_h).ceil() as usize + 20).min(total);
+        for li in render_start..render_end {
             let screen_y = gutter_origin_y + li as f32 * row_h;
             let is_cursor = li == self.text_location.line_idx;
             let ln_color = if is_cursor {
