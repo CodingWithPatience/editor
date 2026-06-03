@@ -1632,6 +1632,11 @@ impl EditorApp {
 
     /// 渲染提示/消息栏（状态栏上方）
     fn render_prompt_or_message_bar(&mut self, ctx: &egui::Context) {
+        // 无提示且无消息时不渲染面板，避免空面板的帧边距产生空隙
+        if self.prompt_type == PromptType::None && self.message.is_none() {
+            return;
+        }
+
         egui::TopBottomPanel::bottom("prompt_or_message")
             .frame(
                 egui::Frame::default()
