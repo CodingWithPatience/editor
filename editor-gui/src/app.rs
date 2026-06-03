@@ -2076,7 +2076,7 @@ impl EditorApp {
                             vec2(cursor_ch_w, row_h),
                         ),
                         0.0,
-                        Color32::from_rgba_unmultiplied(255, 255, 200, 180),
+                        self.theme_colors.cursor,
                     );
                 }
             }

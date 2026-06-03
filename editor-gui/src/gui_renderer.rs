@@ -38,7 +38,7 @@ impl ThemeColors {
         Self {
             text: rgb(theme.text, Color32::from_rgb(210, 210, 210)),
             background: rgb(theme.background, Color32::from_rgb(30, 30, 30)),
-            cursor: rgb(theme.cursor_color, Color32::from_rgb(255, 255, 200)),
+            cursor: rgb(theme.cursor_color, Color32::from_rgb(210, 210, 210)),
             selection_bg: rgb(theme.selection_bg, Color32::from_rgb(60, 60, 120)),
             search_match_bg: rgb(theme.search_match_bg, Color32::from_rgb(80, 80, 0)),
             search_selected_bg: rgb(theme.search_selected_bg, Color32::from_rgb(120, 120, 0)),
